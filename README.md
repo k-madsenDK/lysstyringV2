@@ -20,7 +20,7 @@ Dette projekt er en avanceret lysstyringsløsning til mit hus, skrevet primært 
   Tryk- og temperatursensor.
 - **BH1750**  
   Lysføler (lux-måling).
-- **PWM modul (Krida Electronics Triac AC Dimmer)**  
+- **PWM modul (Krida Electronics PWM 8A AC Light Dimmer Module 50Hz 60Hz TASMOTA)**  
   Bruges til dæmpning af lys.
 - **Standard 24V/220V Relæ (valgfrit)**  
   Kan bruges til at beskytte PWM-modulet eller som ekstra tænd/sluk-funktion.
