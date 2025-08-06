@@ -12,10 +12,23 @@ Dette projekt er en avanceret lysstyringsløsning til mit hus, skrevet primært 
 - Energibesparende funktioner (sluk automatisk når ingen er hjemme)
 - Kan udvides med flere sensorer eller aktuatorer
 
+## Hardware
+
+- **Raspberry Pi Pico 2040**  
+  Bruges som central microcontroller. (NTP-funktion kræver evt. netværksmodul, hvis tidssynkronisering ønskes)
+- **BMP280**  
+  Tryk- og temperatursensor.
+- **BH1750**  
+  Lysføler (lux-måling).
+- **PWM modul (Krida Electronics Triac AC Dimmer)**  
+  Bruges til dæmpning af lys.
+- **Standard 24V/220V Relæ (valgfrit)**  
+  Kan bruges til at beskytte PWM-modulet eller som ekstra tænd/sluk-funktion.
+
 ## Teknologi
 
 - **Sprog:** C++ (primært), C
-- **Hardware:** Typisk Arduino, ESP32, eller lignende microcontroller
+- **Hardware:** Typisk Raspberry Pi Pico 2040, men kan tilpasses andre microcontrollere
 - **Sensorer:** Bevægelsessensorer, lyssensorer, evt. internetklokke
 - **Aktuatorer:** Relæer eller smart-lys
 
