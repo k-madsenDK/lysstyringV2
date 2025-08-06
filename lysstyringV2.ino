@@ -1,8 +1,20 @@
 /*
   HUSK at ændre i .arduino15/packages/rp2040/hardware/rp2040/x.x.x/platform.txt
-  indsæt compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003C000 -DPICO_CORE1_STACK_ADDR=0x20040000 -DPICO_CORE0_STACK_SIZE=16384 -DPICO_CORE1_STACK_SIZE=16384
+  indsætcompiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x20041000 -DPICO_CORE1_STACK_ADDR=0x20042000
   dette skal gøres ved hver platform opdatering
 */
+/**
+ * @file lysstyringV2.ino
+ * @brief Hovedprogram til lyskontrolsystemet på Raspberry Pi Pico W.
+ *
+ * Opdeling:
+ *   - Core0 håndterer webserver, SD, WiFi, NTP og system-setup.
+ *   - Core1 håndterer sensoraflæsning, hardwarestyring, automatik og PIR.
+ *
+ * Delte variabler mellem cores er mutex-beskyttet.
+ * SD-kort bruges til konfiguration og logning.
+ */
+ 
 #include <Arduino.h>
 #include <WiFi.h>           // Til Pico W
 #include <WiFiUdp.h>
@@ -10,7 +22,6 @@
 #include "pico/stdlib.h"
 #include "hardware/rtc.h"
 #include <SdFat.h>
-#include <MDNS_Generic.h>
 #include "WebServerHandler.h"
 #include "pico/mutex.h"
 #include "LysAutomatik.h"
@@ -21,12 +32,13 @@
 #include "lyslog.h"
 
 
-// SD-kort pins
+// --------- SD-kort opsætning ---------
 #define SD_MISO 16
 #define SD_CS   17
 #define SD_SCK  18
 #define SD_MOSI 19
 
+// --------- Hardware konstanter ---------
 #define dimmerstart 14000 //måles individuelt afhængig af pære type
 #define dimmermax  48000 //som ovenfor
 #define dimmerrelayben 2 //ben nummer som 220v relayet er tilsluttet
@@ -36,38 +48,27 @@
 #define pir2def 15 //pir2 ben
 #define hwswdef 13 //hardware switch
 
-mutex_t lys_mutex;
-mutex_t nat_mutex;
-mutex_t param_mutex;
-mutex_t pir_mutex;
+// --------- Globale mutex-objekter til at beskytte delte variabler mellem cores ---------
+mutex_t lys_mutex;  //< Beskytter lys- og PWM-værdier
+mutex_t nat_mutex;  //< Beskytter nat/dag-status
+mutex_t param_mutex;//< Beskytter konfigurationsparametre (LysParam)
+mutex_t pir_mutex;//< Beskytter PIR-relaterede tider
 
-//const char* ssid     = "SSiD";
-//const char* password = "password";
 //ssid og password er predifineret i mitjason.h
 
+// --------- WiFi og systemnavn ---------
 #define systemNavn "lyskontrol"//msdn service
 String hostname = systemNavn;
 
-bool core1_separate_stack = true; // begge prosesorer har deres egen 8k stak
-bool swaktiv = false;// software on off
-int last_lysprocent = 0;
-bool kopinatstatus = false;
-LysParam lysparam; // Opretter et objekt med default værdier bruges af begge core hører sammen med param_mutex
 
-// NTP opsætning
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 2 * 3600, 60000); // GMT+2, opdater hvert minut
-WiFiUDP udp;
-MDNS mdns(udp);
-// Heap-allokering
-WiFiServer server(80);
-
-MitJsonWiFi* mitjason = new MitJsonWiFi;
-
-// Simple hardware timer
-//SimpleHardwareTimer myTimer;
-//SimpleHardwareTimer softlysTimer;
-
+// --------- Globale tilstande for systemet ---------
+bool core1_separate_stack = true; ///< Egen stak for core1
+bool swaktiv = false;             ///< Software on/off (bruges i web)
+int last_lysprocent = 0;          ///< PWM-værdi (0-100%)
+bool kopinatstatus = false;       ///< Om nataktiv er aktiv
+LysParam lysparam;                ///< Systemets konfigurationsparametre (mutexbeskyttet!)
+// --------- Core1-delte variabler ---------
+// (Se også lignende deklaration i core1-sektion)
 extern float last_lux;
 extern float last_temp;
 extern float last_pressure;
@@ -84,6 +85,16 @@ extern String sidstehwswtid;
 void blink();
 void softlysIrq();
 
+// --------- NTP- og WiFi-opsætning ---------
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 2 * 3600, 60000); // GMT+2, opdater hvert minut
+WiFiUDP udp;
+// Heap-allokering
+WiFiServer server(80);
+
+// --------- Funktioner ---------
+// --------- Konfiguration & log ---------
+MitJsonWiFi* mitjason = new MitJsonWiFi;
 WebServerHandler *webHandler = new WebServerHandler(
     last_lysprocent,
     internaltemp,
@@ -99,7 +110,6 @@ WebServerHandler *webHandler = new WebServerHandler(
     &sidste2pirtid, 
     &sidstehwswtid
 );
-
 SimpleHardwareTimer *fifoTimer = new SimpleHardwareTimer;
 volatile bool queueDirty = false;
 
@@ -108,17 +118,12 @@ volatile bool queueDirty = false;
 std::queue<uint32_t> logQueue;
 LysLog *lyslog = new LysLog(sd, lysparam.lognataktiv,lysparam.logpirdetection);
 
+// --------- SD-kort og sensor flags ---------
 SdFat sd;
 FsFile myFile;
 bool ntpsat = false;
 bool BH1750_tilstede = false;// husk denne variabel styres fra core 1
 bool BMP280_tilstede = false; // core 1 variabel
-
-/* ved alle core1 variabler skal under stående anvendes stop ALDRIG core0
-     rp2040.idleOtherCore();// stop core1
-    BH1750_tilstede; //maker til core1 at den kan starte setup
-    rp2040.resumeOtherCore();//start 
- */
 
   /*
     denne klasse er beregnet til at styre et 220v relay med efterfølgende 8A dimmer kredsløb 
@@ -127,7 +132,7 @@ bool BMP280_tilstede = false; // core 1 variabel
     Af sikkerheds hensyn er der monteret et relay foran dimmer modulet således at modulet kun får 220v 
     når det er i brug.
   */
-
+// --------- FIFO log callback ---------
 void fifoTimerCallback() {
     while (rp2040.fifo.available()) {
         uint32_t code;
@@ -136,8 +141,12 @@ void fifoTimerCallback() {
         queueDirty = true;
     }
 }
-  
- // Ny WiFi + NTP rutine
+
+// --------- WiFi og NTP setup ---------
+/**
+ * @brief Forbinder til WiFi og synkroniserer tid via NTP.
+ * @return true hvis alt lykkedes, ellers false.
+ */
 bool setupWiFiAndNTP() {
     Serial.println("Forbinder til WiFi...");
     WiFi.setHostname("lyscontrol");
@@ -193,6 +202,9 @@ bool setupWiFiAndNTP() {
     return true;
 }
 
+/**
+ * @brief Setup-funktion, kaldes én gang ved opstart (core0).
+ */
 void setup() {
   // put your setup code here, to run once:
     Serial.begin(115200);
@@ -201,7 +213,7 @@ void setup() {
     mutex_init(&param_mutex);
     mutex_init(&pir_mutex);
     
-    while(!Serial) { ; }
+  //  while(!Serial) { ; } // for debug vent på usb connection
     delay(1000);
 
     SPI.setRX(SD_MISO);
@@ -228,9 +240,8 @@ void setup() {
     rtc_get_datetime(&t);
     Serial.printf("Tid: %04d-%02d-%02d %02d:%02d:%02d\n", t.year, t.month, t.day, t.hour, t.min, t.sec);
 
-    fifoTimer->setInterval(10, fifoTimerCallback);
+    fifoTimer->setInterval(10, fifoTimerCallback); //10ms
     
-    mdns.begin(WiFi.localIP(), hostname.c_str());
     
     server.begin();
     //lysparam.lognataktiv = true;
@@ -240,6 +251,9 @@ void setup() {
     rp2040.resumeOtherCore();//start 
  }
 
+/**
+ * @brief Læser events fra logQueue og logger dem til SD-kort.
+ */
 void checkforlog(){
     queueDirty = false;
     while (!logQueue.empty()) {
@@ -272,6 +286,10 @@ void checkforlog(){
     }
   }
 
+/**
+ * @brief Forsøger at genforbinde til WiFi.
+ * @return WiFi-status
+ */
 int connectwifi(void){ // rekonnect wifi
   WiFi.disconnect();
   WiFi.setHostname("lyscontrol");
@@ -279,10 +297,13 @@ int connectwifi(void){ // rekonnect wifi
   return(statuslocal);
 }// end connectwifi
 
+/**
+ * @brief Main loop (core0).
+ * Håndterer webserver, log og WiFi-forbindelse.
+ */
 void loop() {
   // put your main code here, to run repeatedly:
 
-  mdns.run();
   //Serial.println("Loop kører");
   if(WiFi.status() != WL_CONNECTED){
     Serial.println("Disconectet");
@@ -315,7 +336,7 @@ void loop() {
 }
 
 
-//---------------------------------- core 1 -----------------------------------------
+// ---------------------- Core 1: Sensorer, hardware & automatik ------------------------
 
 #include <Wire.h>
 #include <BH1750.h>
@@ -324,20 +345,23 @@ void loop() {
 #include "pirroutiner.h"
 #include "SimpleSoftwareTimer.h"
 
+// --------- Core1-delte variabler ---------
 BH1750 *lightMeter = new BH1750;
 Adafruit_BMP280 *bmp = new Adafruit_BMP280;
-bool timer_tik  = false;
-float last_lux = 0.0;
-float last_temp = 0.0;
-float last_pressure = 0.0;
-float internaltemp = 0.0;
-bool hwaktiv = false;
-bool updatelysprocent = false;
-int nyupdatevaerdi = 0;
-String sidste1pirtid = "";
-String sidste2pirtid = "";
-String sidstehwswtid = "";
-
+bool timer_tik  = false;          ///flag sættes 1 gang pr sekund ca. 
+float last_lux = 0.0;             ///< Lysmåling fra BH1750
+float last_temp = 0.0;            ///< Temperatur fra BMP280
+float last_pressure = 0.0;        ///< Tryk fra BMP280
+float internaltemp = 0.0;         ///< Intern CPU-temperatur
+bool hwaktiv = false;             ///< Hardware-switch
+bool updatelysprocent = false;    ///< Flag for ændring af lysprocent
+int nyupdatevaerdi = 0;           ///< Ny PWM-værdi ønsket
+String sidste1pirtid = "";        ///< Sidste PIR1-aktiveringstid
+String sidste2pirtid = "";        ///< Sidste PIR2-aktiveringstid
+String sidstehwswtid = "";        ///< Sidste hardware-switch tid
+bool tvungeton = false;             ///< Flag for tvunget tænd
+bool hwaktivlocal = false;          ///< Lokal HW-aktiv
+bool softwareswActiveret = false;   ///< flag for software switch aktiveret
 
 dimmerfunktion *dimmer = new dimmerfunktion(dimmerrelayben,dimmerpwmben,dimmerstart,dimmermax,&lysparam);
 LysAutomatik *automatik = new LysAutomatik(lysparam, dimmer);
@@ -347,17 +371,26 @@ SimpleSoftwareTimer softlysTimer;
 
 
 
-
+/**
+ * @brief Sætter lysstyrken via softstart (bruges fra web/core0).
+ */
 void setlysiprocentSoft(int procent){ //core 0 web interface
     dimmer->setlysiprocentSoft(procent);
-    Serial.println("setlysiprocentSoft");
+    //Serial.println("setlysiprocentSoft");
   }
-  
+
+/**
+ * @brief Blinker onboard LED én gang pr. sekund (indikator for core1-kørsel)
+ * sætter timer_tik.brugt i timer1 loop VIGTIG
+ */
 void blink() {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
     timer_tik = true;
 }
 
+/**
+ * @brief Softlys timer IRQ; styrer softstart/sluk og PIR-timer.
+ */
 void softlysIrq() {
 
     // Softstart step pr. sekund
@@ -371,6 +404,9 @@ void softlysIrq() {
 
 }
 
+/**
+ * @brief Setup-funktion for core1; initialiserer sensorer og timer.
+ */
 void setup1() {
   // put your setup code here, to run once:
   while(!ntpsat){ //vent på ntp kredsen er igang
@@ -406,10 +442,9 @@ void setup1() {
     
 }
 
-bool tvungeton = false;
-bool hwaktivlocal = false;
-bool softwareswActiveret = false;
-
+/**
+ * @brief Main loop (core1). Håndterer sensorer, automatik og PWM.
+ */
 void loop1() {
   // put your main code here, to run repeatedly:
   myTimer.run();
@@ -472,8 +507,7 @@ void loop1() {
           }//end if
          
         }
-    internaltemp = analogReadTemp();
-    //debugStatusSerial_loop1();   
+    internaltemp = analogReadTemp(); //kontrol af cpu temp webside  
     }//end if timer_tik
   mutex_enter_blocking(&lys_mutex);
  if(updatelysprocent) //sættes af core 0

@@ -1,3 +1,13 @@
+/**
+ * @file WebServerHandler.h
+ * @brief Klasse til at håndtere HTTP-requests (webinterface) på Pico W.
+ * 
+ * Håndterer:
+ *  - Statusvisning og slider-kontrol
+ *  - Parametrering af hardware via web
+ *  - Log-konfiguration og status
+ *  - Kommunikation med hardware via globale variabler (mutexbeskyttet)
+ */
 #pragma once
 #include <WiFi.h>
 #include <Arduino.h>
@@ -5,16 +15,22 @@
 #include "mitjason.h"
 #include <SdFat.h>
 
+// Eksterne variabler fra main/core1, mutexbeskyttelse påkrævet hvis der skrives/ændres!
 extern mutex_t lys_mutex;
 extern mutex_t nat_mutex;
 extern mutex_t param_mutex;
 extern mutex_t pir_mutex;
 
 extern LysParam lysparam;
-LysParam lysparamWeb;
+LysParam lysparamWeb;         ///< Midlertidig kopi til webformular
+
 extern MitJsonWiFi* mitjason;
 extern SdFat sd;
 
+/**
+ * @class WebServerHandler
+ * @brief HTTP-request handler: mapping fra web-side til systemparametre.
+ */
 class WebServerHandler {
   private:
   String extractPathFromRequestLine(const String& requestLine) {
@@ -39,19 +55,19 @@ class WebServerHandler {
     return path;
   }
 public:
-    int& aktuellysvaerdi;
-    float& internaltemp;
-    bool& lys_permanet_on;
-    float& aktuellux;
-    float& aktueltemp;
-    float& aktuelpress;
-    bool& opdaterlys;
-    int& nylysvaerdi;
-    bool& softwarehardset;
-    bool& nataktivstatus; // pointer til automatik
-    String* pir1_tid;
-    String* pir2_tid;
-    String* hwsw_tid;
+    int& aktuellysvaerdi;    ///< PWM-lysværdi
+    float& internaltemp;     ///< Intern CPU-temp
+    bool& lys_permanet_on;   ///< Om lyset er permanent ON
+    float& aktuellux;        ///< Aktuel målt lux
+    float& aktueltemp;       ///< Aktuel temperatur
+    float& aktuelpress;      ///< Aktuelt lufttryk
+    bool& opdaterlys;        ///< Flag: ny lysværdi ønskes
+    int& nylysvaerdi;        ///< Ny ønsket PWM-værdi
+    bool& softwarehardset;   ///< Om software har låst systemet
+    bool& nataktivstatus;    ///< Om nataktiv er aktiv
+    String* pir1_tid;        ///< Tid for sidste PIR1-event
+    String* pir2_tid;        ///< Tid for sidste PIR2-event
+    String* hwsw_tid;        ///< Tid for sidste HW-switch-event
     
     WebServerHandler(
         int& lys, float& temp, bool& lys_on, float& aktuel_lux, float& aktuel_temp,

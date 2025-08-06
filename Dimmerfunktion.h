@@ -1,9 +1,17 @@
+/**
+ * @file Dimmerfunktion.h
+ * @brief Klasse til styring af dimmer med softstart/sluk og PWM.
+ *
+ * Bruges til at styre en relæ- og PWM-baseret lysdæmper til 220V.
+ */
 #pragma once
 #include <Arduino.h>
 #include "LysParam.h"  // Tilføjet for at få adgang til aktuelStepfrekvens
 
-//extern mutex_t param_mutex;
-
+/**
+ * @class dimmerfunktion
+ * @brief PWM og relæstyring med softstart/softsluk for glødelampe/dimmer.
+ */
 class dimmerfunktion {
   private:
     int pwmstartvaerdi;
@@ -36,6 +44,9 @@ class dimmerfunktion {
     void relayOn()  { digitalWrite(relayben, 1); }
     void relayOff() { digitalWrite(relayben, 0); }
 
+    /**
+     * @brief Sæt lysstyrke i procent (direkte, uden softstart)
+     */
     bool setlysiprocent(int nyvaerdi) {
       if (nyvaerdi < 0 || nyvaerdi > 100) return false;
       Serial.print("Ny lysværdi = ");Serial.println(nyvaerdi);
@@ -55,7 +66,9 @@ class dimmerfunktion {
     }
     
   public:
-    // Ny constructor der kan tage pointer til LysParam
+      /**
+     * @brief Constructor, angiv ben og område.
+     */
     dimmerfunktion(int relayben = 2, int pwmben = 0, int pwmlow = 0, int pwmhigh = 65535, LysParam* lysparam = nullptr) {
       this->relayben = relayben;
       this->pwmben = pwmben;
@@ -69,16 +82,22 @@ class dimmerfunktion {
     void setLysParam(LysParam* param) {
       this->lysparam_ptr = param;
     }
-
+    /**
+     * @brief Sluk lyset (indirekte).
+     */
     void sluk(void) {
       this->setlysiprocentSoft(0);
     }
-    
+     /**
+     * @brief Tænd lyset (indirekte, 100%).
+     */
     void taend(void) {
       this->setlysiprocentSoft(100);
     }
 
-    // Softstart - stigende lys
+    /**
+     * @brief Start softstart mod slutProcent.
+     */
     void startSoftStart(int slutProcent = 100) {
       softstart_aktiv = true;
       softsluk_aktiv = false;
@@ -92,6 +111,9 @@ class dimmerfunktion {
       soft_nuvaerende = aktuelprocentvaerdi;
     }
 
+    /**
+     * @brief Et step mod softstart-mål.
+     */
     void softstartStep() {
       if (!softstart_aktiv) return;
       soft_nuvaerende += soft_step;
@@ -102,10 +124,14 @@ class dimmerfunktion {
         setlysiprocent(soft_nuvaerende);
       }
     }
-
+    /**
+     * @brief Er softstart kørende?
+     */
     bool softstartAktiv() { return softstart_aktiv; }
 
-    // Softsluk - faldende lys
+    /**
+     * @brief Start softsluk mod slutProcent.
+     */
     void startSoftSluk(int slutProcent ) {
       softsluk_aktiv = true;
       softstart_aktiv = false;
@@ -116,7 +142,10 @@ class dimmerfunktion {
       } 
       soft_nuvaerende = aktuelprocentvaerdi;
     }
-
+    
+    /**
+     * @brief Et step mod softsluk-mål.
+     */
     void softslukStep() {
       if (!softsluk_aktiv) return;
       soft_nuvaerende -= soft_step;
@@ -127,7 +156,10 @@ class dimmerfunktion {
         setlysiprocent(soft_nuvaerende);
       }
     }
-    
+
+     /**
+     * @brief Skift til ny værdi med softstart/sluk.
+     */
     void setlysiprocentSoft(int nyvaerdi) {
       if (nyvaerdi < 0 || nyvaerdi > 100) return;
       aktuelsetvaerdi = nyvaerdi;
@@ -139,12 +171,21 @@ class dimmerfunktion {
       } 
     }
 
+    /**
+     * @brief Er softsluk kørende?
+     */    
     bool softslukAktiv() { return softsluk_aktiv; }
 
+        /**
+     * @brief Returnér senest satte værdi.
+     */
     int returnersetvaerdi(void) {
       return aktuelsetvaerdi;
     }
 
+    /**
+     * @brief Returnér aktuelle værdi.
+     */
     int returneraktuelvaerdi(void){
       return aktuelprocentvaerdi;
     }

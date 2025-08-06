@@ -1,3 +1,9 @@
+/**
+ * @file pirroutiner.h
+ * @brief Klasse til håndtering af PIR- og HW-switch-events med debounce, tidsstempling og mutex.
+ *
+ * Bruges til at detektere PIR/hw, opdatere tider og sende events til log via FIFO.
+ */
 #pragma once
 #include <Arduino.h>
 #include "hardware/rtc.h"
@@ -62,6 +68,16 @@ class pirroutiner {
     }
 
   public:
+    /**
+     * @brief Constructor.
+     * @param pir1 GPIO til PIR1
+     * @param pir2 GPIO til PIR2
+     * @param hwsw GPIO til hardware switch
+     * @param pir1txt Pointer til PIR1-tid (mutexbeskyttet)
+     * @param pir2txt Pointer til PIR2-tid (mutexbeskyttet)
+     * @param hwswtxt Pointer til HW-tid (mutexbeskyttet)
+     * @param p Reference til LysParam
+     */
     pirroutiner(int pir1, int pir2, int hwsw, String* pir1txt, String* pir2txt, String* hwswtxt, LysParam& p)
       : pir1_tid(pir1txt), pir2_tid(pir2txt), hwsw_tid(hwswtxt) , param(p)
     {
@@ -70,10 +86,10 @@ class pirroutiner {
       this->hwswben = hwsw;
       this->initInputs();
     }
-        //mutex_enter_blocking(&param_mutex);
-        //automatik->update(last_lux, pirstatus, ntpTid);
-        //mutex_exit(&param_mutex);
-    // Timer input routine - kaldes fra softlysIrq() hver 0.25 sek
+    /**
+     * @brief Timer input routine – kaldes fra softlysIrq() hver 0.25 sek.
+     *        Opdaterer tider og sender logevents via FIFO.
+     */
     void timerRoutine() {
         if(pir1_tilstede) {
     if(digitalRead(pir1ben) == LOW) { // PIR1 aktiveret (aktiv LOW)
@@ -132,7 +148,7 @@ class pirroutiner {
       }
   }
 
-    // Public getters for PIR
+    // ------ Public getters for PIR og HW ------
     bool isPIR1Activated() {
       bool wasActivated = pir1_aktiveret;
       pir1_aktiveret = false;

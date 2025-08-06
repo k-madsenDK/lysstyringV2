@@ -1,11 +1,18 @@
-#ifndef MITJSON_H
-#define MITJSON_H
-
+/**
+ * @file mitjason.h
+ * @brief Klasse til at læse/skrive WiFi- og LysParam-konfiguration fra/til JSON.
+ *        Understøtter både SPIFFS/LittleFS (File) og SdFat (FsFile).
+ */
+#pragma once
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <SdFat.h>
 #include "LysParam.h"
 
+/**
+ * @class MitJsonWiFi
+ * @brief Håndterer indlæsning og lagring af WiFi- og systemparametre fra SD.
+ */
 class MitJsonWiFi {
 public:
     const char* default_ssid = "SSID";
@@ -21,7 +28,9 @@ public:
         strncpy(kontrollernavn, default_kontrollernavn, sizeof(kontrollernavn));
     }
 
-    // For SPIFFS/LittleFS
+    /**
+     * @brief Læs WiFi fra SPIFFS/LittleFS
+     */
     bool loadWiFi(fs::FS& fs, const char* filename) {
         File file = fs.open(filename, "r");
         if (!file) return false;
@@ -29,7 +38,9 @@ public:
         file.close();
         return ok;
     }
-
+    /**
+     * @brief Læs WiFi fra SD/FsFile
+     */
     // For SdFat/FsFile
     bool loadWiFi(SdFat& sd, const char* filename) {
         FsFile file = sd.open(filename, FILE_READ);
@@ -54,7 +65,11 @@ private:
 //strlcpy(param->styringsvalg, d["styringsvalg"].is<const char*>() ? d["styringsvalg"].as<const char*>() : "Klokken", sizeof(param->styringsvalg));
 
 public:
-
+    /**
+     * @brief Indlæs LysParam (default) fra SD.
+     * @param sd SD-kort reference
+     * @param param Pointer til LysParam
+     */
 bool loadDefault(SdFat& sd, LysParam* param) {
     FsFile file = sd.open("Default.json", FILE_READ);
     if (!file) return false;
@@ -85,7 +100,11 @@ bool loadDefault(SdFat& sd, LysParam* param) {
     param->aktuelStepfrekvens = d["aktuelStepfrekvens"] | 5;
     return true;
 }
-
+    /**
+     * @brief Gem LysParam (default) til SD.
+     * @param sd SD-kort reference
+     * @param param Pointer til LysParam
+     */
 bool saveDefault(SdFat& sd, const LysParam* param) {
     StaticJsonDocument<512> doc;
     JsonObject d = doc["Default"].to<JsonObject>();
@@ -113,5 +132,3 @@ bool saveDefault(SdFat& sd, const LysParam* param) {
 }
 
 };
-
-#endif // MITJSON_H

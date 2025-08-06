@@ -1,29 +1,38 @@
+/**
+ * @file SimpleSoftwareTimer.h
+ * @brief Enkel software timer-klasse til brug i Arduino-loop.
+ *
+ * Eksempel på brug:
+ *   SimpleSoftwareTimer myTimer;
+ *   myTimer.setInterval(1000, myCallback);
+ *   void loop() { myTimer.run(); }
+ */
 #pragma once
-
 #include <Arduino.h>
 
 class SimpleSoftwareTimer {
 public:
     SimpleSoftwareTimer() : prevMillis(0), interval(0), active(false), cb(nullptr) {}
-/*
-
-    SimpleSoftwareTimer myTimer; erstatter din gamle hardware timer.
-    Sæt interval og callback med myTimer.setInterval(1000, myCallback);
-    I dit loop skal du kalde myTimer.run(); ofte (helst hver gang).
-    Callbacken (myCallback) bliver kaldt ca. hvert sekund.
-
-*/
+    /**
+     * @brief Sæt interval og callback.
+     * @param interval_ms Interval i millisekunder
+     * @param callback Pointer til callback-funktion
+     */
     void setInterval(uint32_t interval_ms, void (*callback)()) {
         interval = interval_ms;
         cb = callback;
         prevMillis = millis();
         active = true;
     }
-
+     /**
+     * @brief Stop timeren.
+     */
     void stop() {
         active = false;
     }
-
+    /**
+     * @brief Skal kaldes ofte fra loop(). Udløser callback, hvis interval er gået.
+     */
     void run() {
         if (active && cb) {
             uint32_t now = millis();
@@ -40,28 +49,3 @@ private:
     bool active;
     void (*cb)();
 };
-
-// --------------------------------------------------------------------
-// Eksempel på brug af SimpleSoftwareTimer i stedet for hardware timer:
-// --------------------------------------------------------------------
-
-// // Definér timeren som global variabel
-// SimpleSoftwareTimer myTimer;
-
-// // Din callback-funktion
-// void myCallback() {
-//     Serial.println("Timer callback kaldt!");
-// }
-
-// void setup() {
-//     Serial.begin(115200);
-//     // Start timeren med 1000 ms interval og callback
-//     myTimer.setInterval(1000, myCallback);
-// }
-
-// void loop() {
-//     // Kald timerens run() ofte i loopet
-//     myTimer.run();
-//
-//     // Resten af din kode
-// }

@@ -1,14 +1,25 @@
+/**
+ * @file LysAutomatik.h
+ * @brief Automatik og state machine for nat/dag, timer, PIR og hardwareoutput.
+ * 
+ * Styrer systemets hovedlogik for nat/dag, PIR-events, PWM og relæ.
+ * Bruger parametre fra LysParam (mutexbeskyttet!).
+ */
+
 #pragma once
 #include "LysParam.h"
 #include "Dimmerfunktion.h"
-
+/**
+ * @class LysAutomatik
+ * @brief Hoved-automatik og tilstandsmaskine. Kaldes fra core1.
+ */
 class LysAutomatik {
 private:
     enum LysState { OFF, TIMER_A, TIMER_C, TIMER_E, NIGHT_GLOW };
     LysState currentState = OFF ;
     
-    LysParam& param;  //defineret i core1 main
-    dimmerfunktion *dimmer;
+    LysParam& param;          ///< Konfigurationsparametre (mutexbeskyttet fra main)
+    dimmerfunktion *dimmer;   ///< Pointer til dimmerobjekt
     bool slukActiveret = false;
     // Timers
     long timerA = 0, timerC = 0, timerE = 0;
