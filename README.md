@@ -27,14 +27,14 @@ Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/
   - BMP280 tryk/temperatur på Wire1 (SDA=10, SCL=11 @ 1 MHz)
   - Simpel I2C‑busrecovery ved boot
 - PIR og HW‑kontakt
-  - 2x PIR‑indgange + hardware‑kontakt (aktiv LOW, intern pull‑up)
+  - 2x PIR‑indgange + hardware‑kontakt (valgfri) 24 v pir detectorer niko 41-549.
   - “Software on” lås fra web (frigøres med Soft OFF)
 - SD‑logning (tidsstemplet via RTC)
   - nataktiv.log: nat/dag ON/OFF
   - pir.log: PIR1/PIR2/hardware‑kontakt/Software on/off
   - Logning kan aktiveres/deaktiveres i web (logconfig.htm)
 - NTP + RTC
-  - Periodisk NTP‑sync mod dk.pool.ntp.org (følger local time)
+  - Periodisk NTP‑sync mod dk.pool.ntp.org (lokal dansk tid via TZ/localtime; NTP offset = 0)
   - RTC opdateres, anvendes til tidsstempler og “Klokken”‑mode
 - Konfiguration via SD + web
   - wifi.json (SSID/password/kontrollernavn)
@@ -50,10 +50,10 @@ Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/
 - SD‑kort via SPI
   - MISO=16, CS=17, SCK=18, MOSI=19 (dedikeret SPI mode)
 - Sensorer: BH1750 (lux), BMP280 (tryk/temperatur)
-- PIR‑sensorer (2x) + hardware‑kontakt (valgfri) 24 v pir detectorer niko 41-549.
+- PIR‑sensorer (2x) + hardware‑kontakt (valgfri). Testet med 24 V PIR detektorer Niko 41-549 (via passende interface).
 - AC‑dimmer (Krida Electronics 8A) + relæ
 - Solid PSU på VSYS anbefales; gerne ekstra bulk‑kondensator tæt på VSYS
-  
+- Detaljerede benforbindelser: se benforbindelser.txt
 
 ## Endpoints (web)
 
@@ -123,6 +123,8 @@ Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/
 - PIR1=14, PIR2=15, HW‑switch=13
 - LED_BUILTIN (on‑board LED)
 
+Se også benforbindelser.txt for den fysiske ledningsføring.
+
 ## Krav/afhængigheder
 
 - Arduino core: Earl Philhower RP2040
@@ -152,7 +154,7 @@ Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/
 
 ## Kendte forhold
 
-- DST håndteres ikke automatisk; NTPClient er sat med fast GMT+2 offset i koden.
+- Lokal dansk tid (CET/CEST) håndteres automatisk via TZ + localtime(); NTPClient offset = 0.
 - I2C bus‑recovery køres ved boot; scanning er slået fra som standard i runtime.
 
 —  

@@ -2,7 +2,7 @@
  * @file lyslog.h
  * @brief SD-logning af nataktivitet, PIR-events og hardware-events.
  *
- * Bruges til at logge events til SD-kortet.
+ * Bruges til at logge events til SD-kortet. Aktiveres/deaktiveres via parametre.
  */
 #pragma once
 
@@ -10,35 +10,38 @@
 #include <SdFat.h>
 #include "hardware/rtc.h"
 
-#define NATLOG_FILENAME "/nataktiv.log"
-#define PIRLOG_FILENAME "/pir.log"
-#define HARDWARELOG_FILENAME "/hardware.log"  // altid aktiv hvis SD er til stede
+#define NATLOG_FILENAME      "/nataktiv.log"
+#define PIRLOG_FILENAME      "/pir.log"
+#define HARDWARELOG_FILENAME "/hardware.log"
 
+/**
+ * @class LysLog
+ * @brief Logger nataktivitet, PIR og hardware-events til SD-kort.
+ */
 class LysLog {
 public:
     LysLog(SdFat &sd, bool natLogEnabled = true, bool pirLogEnabled = true)
         : sd(sd), natLogEnabled(natLogEnabled), pirLogEnabled(pirLogEnabled) {}
 
-    // Nat-aktivitet (respekterer natLogEnabled)
+    // Nataktivitet on/off
     void logNatAktiv(bool aktiv) {
         if (!natLogEnabled) return;
-        appendToFile(NATLOG_FILENAME, makeTimeLine("NAT_AKTIV_" + String(aktiv ? "ON" : "OFF")));
+        String line = makeTimeLine("NAT_AKTIV_" + String(aktiv ? "ON" : "OFF"));
+        appendToFile(NATLOG_FILENAME, line);
     }
 
-    // PIR (respekterer pirLogEnabled)
+    // PIR-event
     void logPIR(const String& pirNavn) {
         if (!pirLogEnabled) return;
-        appendToFile(PIRLOG_FILENAME, makeTimeLine(pirNavn + "_ACTIVATED"));
+        String line = makeTimeLine(pirNavn + "_ACTIVATED");
+        appendToFile(PIRLOG_FILENAME, line);
     }
 
-    // Hardware-log (ALTID, hvis SD er til stede)
-    void logHardware(const String& event) {
-        appendToFile(HARDWARELOG_FILENAME, makeTimeLine(event));
+    // Hardware-events (WIFI_RECONNECT, WATCHDOG_RESET, BOOT_REBOOT ...)
+    void logHardware(const String& text) {
+        String line = makeTimeLine(text);
+        appendToFile(HARDWARELOG_FILENAME, line);
     }
-    void logWatchdogReset()                { logHardware("WATCHDOG_RESET"); }
-    void logI2CReset(const char* bus)      { logHardware(String("I2C_RESET_") + bus); }
-    void logWiFiReconnect(const String& ip){ logHardware(String("WIFI_RECONNECT ") + ip); }
-    void logBootReboot(const char* reason) { logHardware(String("BOOT_REBOOT ") + reason); }
 
     void setLogNatAktiv(bool enabled) { natLogEnabled = enabled; }
     void setLogPIRAktiv(bool enabled) { pirLogEnabled = enabled; }
@@ -48,13 +51,25 @@ private:
     bool natLogEnabled;
     bool pirLogEnabled;
 
+    // Tidslinje med UNSYNCED fallback når RTC ikke er valid
     String makeTimeLine(const String& event) {
         datetime_t t;
         rtc_get_datetime(&t);
+        if (!isValidRTC(t)) {
+            return "[UNSYNCED] " + event + "\n";
+        }
         char tidBuf[32];
         snprintf(tidBuf, sizeof(tidBuf), "%04d-%02d-%02d %02d:%02d:%02d",
                  t.year, t.month, t.day, t.hour, t.min, t.sec);
         return "[" + String(tidBuf) + "] " + event + "\n";
+    }
+
+    bool isValidRTC(const datetime_t& x) {
+        if (x.year < 2023 || x.year > 2099) return false;
+        if (x.month < 1 || x.month > 12) return false;
+        if (x.day < 1 || x.day > 31) return false;
+        if (x.hour > 23 || x.min > 59 || x.sec > 59) return false;
+        return true;
     }
 
     void appendToFile(const char *filename, const String& line) {

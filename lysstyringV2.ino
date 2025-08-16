@@ -23,6 +23,7 @@
 #include <ArduinoJson.h>   // behøves til JSON i WebServerHandler
 #include <time.h>
 #include <stdlib.h>
+#include "hardware/watchdog.h"  // til at logge watchdog-reset i core0
 
 // -------------------- SD-kort pins --------------------
 #define SD_MISO 16
@@ -39,7 +40,7 @@
 #define pir1def 14
 #define pir2def 15
 #define hwswdef 13
-#define ntpupdatetimer 10000 // ms mellem ntp check
+#define ntpupdatetimer 10000 // ms mellem NTP-check
 
 // -------------------- Mutex --------------------
 mutex_t lys_mutex;
@@ -60,15 +61,65 @@ LysParam lysparam;
 
 // -------------------- NTP / WiFi --------------------
 WiFiUDP ntpUDP;
-// Offset 0 – vi bruger TZ + localtime() til dansk tid (CET/CEST)
+// Offset=0; lokal tid håndteres via TZ + localtime()
 NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 0, 60000);
 WiFiUDP udp;
 WiFiServer server(80);
 
+// NTP fallback-servere (roteres ved vedvarende fejl)
+const char* NTP_SERVERS[] = {
+  "dk.pool.ntp.org",
+  "pool.ntp.org",
+  "time.google.com",
+  "time.cloudflare.com"
+};
+const size_t NTP_SERVERS_COUNT = sizeof(NTP_SERVERS)/sizeof(NTP_SERVERS[0]);
+
 // NTP epoch kopi til core1 (UTC)
 volatile uint32_t ntpEpochCopy = 0;
 unsigned long lastPeriodicNtpMs = 0;
-const unsigned long periodicNtpIntervalMs = 60000; // 60 sek
+
+// -------------------- WiFi keep-alive (holder association i live) --------------------
+WiFiUDP keepAliveUdp;
+unsigned long lastKeepAliveMs = 0;
+const unsigned long keepAliveIntervalMs = 30000; // 30s
+void wifiKeepAlive() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  unsigned long now = millis();
+  if (now - lastKeepAliveMs < keepAliveIntervalMs) return;
+  lastKeepAliveMs = now;
+  IPAddress gw = WiFi.gatewayIP();
+  if (gw == IPAddress(0,0,0,0)) return;
+  if (keepAliveUdp.begin(0)) {
+    keepAliveUdp.beginPacket(gw, 53);
+    uint8_t b = 0;
+    keepAliveUdp.write(&b, 1);
+    keepAliveUdp.endPacket();
+    keepAliveUdp.stop();
+  }
+}
+
+// -------------------- Gem/indlæs sidste kendte NTP-epoch (hjælp til historik) --------------------
+bool saveLastEpochToSD(SdFat& sd, uint32_t epochUTC) {
+  StaticJsonDocument<96> doc;
+  doc["epochUTC"] = epochUTC;
+  FsFile f = sd.open("/time.json", O_WRITE | O_CREAT | O_TRUNC);
+  if (!f) return false;
+  bool ok = serializeJson(doc, f) > 0;
+  f.close();
+  return ok;
+}
+
+bool loadLastEpochFromSD(SdFat& sd, uint32_t& epochUTC) {
+  FsFile f = sd.open("/time.json", O_RDONLY);
+  if (!f) return false;
+  StaticJsonDocument<96> doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err) return false;
+  epochUTC = doc["epochUTC"] | 0u;
+  return (epochUTC != 0u);
+}
 
 // -------------------- Eksterne variabler (defineres senere i filen) --------------------
 extern float last_lux;
@@ -146,24 +197,33 @@ bool setupWiFiAndNTP() {
     Serial.print("IP adresse: ");
     Serial.println(WiFi.localIP());
 
+    // Rotér gennem NTP-servere, til vi får tid
     Serial.println("Starter NTP-klient...");
     timeClient.begin();
+    size_t serverIdx = 0;
+    timeClient.setPoolServerName(NTP_SERVERS[serverIdx]);
     int ntpTries = 0;
     bool ntpOk = false;
-    while (ntpTries < 20) {
+    while (ntpTries < 40) { // ~40 sekunder
         if (timeClient.update()) {
             ntpOk = true;
             break;
         }
+        ntpTries++;
+        if (ntpTries % 10 == 0) { // skift server hver 10. forsøg
+            serverIdx = (serverIdx + 1) % NTP_SERVERS_COUNT;
+            timeClient.setPoolServerName(NTP_SERVERS[serverIdx]);
+            Serial.print("Skifter NTP-server til: ");
+            Serial.println(NTP_SERVERS[serverIdx]);
+        }
         Serial.println("Venter på NTP sync...");
         delay(1000);
-        ntpTries++;
     }
     if (!ntpOk) {
         Serial.println("Kunne ikke hente tid fra NTP!");
         return false;
     }
-    Serial.print("NTP tid (formatted): ");
+    Serial.print("NTP tid (formatted UTC): ");
     Serial.println(timeClient.getFormattedTime());
 
     // epoch fra NTP er UTC (offset=0); konverter til lokal tid via TZ
@@ -181,23 +241,25 @@ bool setupWiFiAndNTP() {
     rtc_init();
     rtc_set_datetime(&t);
 
-    // Gem UTC-epoch til core1
+    // Gem UTC-epoch til core1 + SD (historik)
     mutex_enter_blocking(&epoch_mutex);
     ntpEpochCopy = (uint32_t)rawTime;
     mutex_exit(&epoch_mutex);
+    saveLastEpochToSD(sd, ntpEpochCopy);
 
     Serial.println("RTC sat ud fra NTP (lokal tid via TZ)!");
     return true;
 }
 
+// Periodisk (ikke-blokerende) NTP opdatering
 void periodicNtpUpdate() {
     if (WiFi.status() != WL_CONNECTED) return;
     unsigned long now = millis();
     if (now - lastPeriodicNtpMs < ntpupdatetimer) return;
     lastPeriodicNtpMs = now;
     if (timeClient.update()) {
-        time_t rawTime = timeClient.getEpochTime();     // UTC
-        struct tm *timeinfo = localtime(&rawTime);      // lokal tid m. DST
+        time_t rawTime = timeClient.getEpochTime(); // UTC
+        struct tm *timeinfo = localtime(&rawTime);
         datetime_t t = {
             (int16_t)(timeinfo->tm_year + 1900),
             (int8_t)(timeinfo->tm_mon + 1),
@@ -209,8 +271,9 @@ void periodicNtpUpdate() {
         };
         rtc_set_datetime(&t);
         mutex_enter_blocking(&epoch_mutex);
-        ntpEpochCopy = (uint32_t)rawTime;               // hold UTC til beregninger
+        ntpEpochCopy = (uint32_t)rawTime;
         mutex_exit(&epoch_mutex);
+        saveLastEpochToSD(sd, ntpEpochCopy);
     }
 }
 
@@ -229,10 +292,6 @@ void checkforlog(){
           case swsw_on:        if (lyslog) lyslog->logPIR("Software on");  break;
           case hwsw_off:       if (lyslog) lyslog->logPIR("Kontakt off");  break;
           case swsw_off:       if (lyslog) lyslog->logPIR("Software off"); break;
-          // Hardware
-          case wdt_reset:        if (lyslog) lyslog->logWatchdogReset();   break;
-          case i2c_reset_wire:   if (lyslog) lyslog->logI2CReset("Wire");  break;
-          case i2c_reset_wire1:  if (lyslog) lyslog->logI2CReset("Wire1"); break;
           default: break;
         }
     }
@@ -256,7 +315,7 @@ void setup() {
 
     delay(1200);
 
-    // Dansk tidszone: CET (UTC+1) og CEST (UTC+2) med EU-regler
+    // Dansk tidszone: CET/CEST (EU-regler)
     setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
     tzset();
 
@@ -272,18 +331,23 @@ void setup() {
         Serial.println("SD init OK!");
     }
 
-    // Opret log før net, så vi kan logge evt. rebootårsag
+    // Opret log (tidligt) – så vi kan logge evt. watchdog-reset
     lyslog = new LysLog(sd, lysparam.lognataktiv, lysparam.logpirdetection);
+
+    // Hvis vi kommer fra watchdog-reset, log det
+    if (watchdog_caused_reboot() && lyslog) {
+        lyslog->logHardware("WATCHDOG_RESET");
+    }
 
     // Load konfiguration
     mitjason->loadWiFi(sd ,"/wifi.json");
     mitjason->loadDefault(sd , &lysparam);
 
     if (!setupWiFiAndNTP()) {
-        if (lyslog) lyslog->logBootReboot("WIFI_NOT_FOUND");
+        if (lyslog) lyslog->logHardware("BOOT_REBOOT WIFI_NOT_FOUND");
         Serial.println("Netværks- eller NTP-fejl! Rebooter om 5 sek.");
         delay(5000);
-        rp2040.reboot();
+        rp2040.reboot(); // ønsket adfærd i “Klokken”-mode
     }
 
     // Vis tid læst fra RTC (lokal)
@@ -308,13 +372,14 @@ void loop() {
         int status = connectwifi();
         if(status == WL_CONNECTED){
             Serial.println("[WiFi] Reconnected");
-            if (lyslog) lyslog->logWiFiReconnect(WiFi.localIP().toString());
+            if (lyslog) lyslog->logHardware(String("WIFI_RECONNECT ") + WiFi.localIP().toString());
         }
     }
 
     periodicNtpUpdate();
+    wifiKeepAlive(); // hold association i live når der ikke er UI-trafik
 
-    // Webserver (behold available() som aftalt)
+    // Webserver
     WiFiClient client = server.available();
     if (client) {
         String req = "";
@@ -365,12 +430,6 @@ String sidstehwswtid = "";
 bool   tvungeton = false;
 bool   hwaktivlocal = false;
 
-// I2C-stabilitets tællere (til debugging/overvågning)
-volatile uint32_t i2cWireResets = 0;
-volatile uint32_t i2cWire1Resets = 0;
-static uint8_t bhNoVal = 0;     // antal sekvenser uden BH1750 værdi
-static uint8_t bmpBad = 0;      // antal dårlige BMP280 målinger i træk
-
 // Dimmer / automatik / PIR
 dimmerfunktion *dimmer = new dimmerfunktion(dimmerrelayben,dimmerpwmben,dimmerstart,dimmermax);
 LysAutomatik  *automatik = new LysAutomatik(lysparam, dimmer);
@@ -405,11 +464,6 @@ void setup1() {
         delay(100);
     }
 
-    // Log hvis vi kommer fra watchdog reset
-    if (watchdog_caused_reboot()) {
-        rp2040.fifo.push_nb(wdt_reset);
-    }
-
     I2CBusRecover::recover(5,4);
     I2CBusRecover::recover(10,11);
     Wire.setSDA(4);
@@ -419,7 +473,7 @@ void setup1() {
     Wire1.setSDA(10);
     Wire1.setSCL(11);
     Wire1.begin();
-    Wire1.setClock(1000000);   // BMP280 bus (test med 1 MHz som nu)
+    Wire1.setClock(1000000);   // BMP280 bus
 
     pinMode(LED_BUILTIN, OUTPUT);
 
@@ -462,53 +516,18 @@ void loop1() {
         kopinatstatus = automatik->getNataktiv();
         mutex_exit(&nat_mutex);
 
-        // BH1750 (Wire) – stabilitet
+        // BH1750
         if(BH1750_tilstede){
             if (lightMeter->hasValue()) {
                 last_lux = lightMeter->getLux();
                 lightMeter->start();
-                bhNoVal = 0;
-            } else {
-                if (++bhNoVal >= 8) { // ~2s uden nyt i HIGH2
-                    Serial.println("[BH1750] Ingen værdier – I2C recover (Wire)");
-                    Wire.end();
-                    I2CBusRecover::recover(5,4);
-                    Wire.setSDA(4); Wire.setSCL(5);
-                    Wire.begin();
-                    Wire.setClock(100000);
-                    lightMeter->begin(BH1750_TO_GROUND, &Wire);
-                    lightMeter->calibrateTiming();
-                    lightMeter->start(BH1750_QUALITY_HIGH2, BH1750_MTREG_DEFAULT);
-                    bhNoVal = 0;
-                    i2cWireResets++;
-                    rp2040.fifo.push_nb(i2c_reset_wire);
-                }
             }
         }
 
-        // BMP280 (Wire1) – stabilitet
+        // BMP280
         if(BMP280_tilstede){
-            float t = bmp->readTemperature();
-            float p = bmp->readPressure() / 100.0F;
-            bool bad = isnan(t) || p < 300.0f || p > 1100.0f;
-            if (bad) {
-                if (++bmpBad >= 3) {
-                    Serial.println("[BMP280] Dårlige læsninger – I2C recover (Wire1)");
-                    Wire1.end();
-                    I2CBusRecover::recover(10,11);
-                    Wire1.setSDA(10); Wire1.setSCL(11);
-                    Wire1.begin();
-                    Wire1.setClock(1000000);
-                    bmp->begin(0x76);
-                    bmpBad = 0;
-                    i2cWire1Resets++;
-                    rp2040.fifo.push_nb(i2c_reset_wire1);
-                }
-            } else {
-                last_temp = t;
-                last_pressure = p;
-                bmpBad = 0;
-            }
+            last_temp = bmp->readTemperature();
+            last_pressure = bmp->readPressure() / 100.0F;
         }
 
         tvungeton = false;
@@ -528,7 +547,7 @@ void loop1() {
 
             uint32_t ntpLocal;
             mutex_enter_blocking(&epoch_mutex);
-            ntpLocal = ntpEpochCopy; // UTC
+            ntpLocal = ntpEpochCopy; // UTC epoch
             mutex_exit(&epoch_mutex);
 
             mutex_enter_blocking(&param_mutex);
