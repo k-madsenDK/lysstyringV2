@@ -4,7 +4,7 @@ Lysstyring til mit hus (Raspberry Pi Pico W / RP2040 + Earl Philhower Arduino co
 
 Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/web.
 
-![Testopstilling](./20250816_152316.jpg)
+![Testopstilling](./testopstilling.jpg)
 
 ## Funktioner (opdateret)
 
