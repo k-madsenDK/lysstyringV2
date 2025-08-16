@@ -32,7 +32,7 @@ Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/
   - pir.log: PIR1/PIR2/hardware‑kontakt/Software on/off
   - Logning kan aktiveres/deaktiveres i web (logconfig.htm)
 - NTP + RTC
-  - Periodisk NTP‑sync mod dk.pool.ntp.org (fast offset GMT+2 i koden)
+  - Periodisk NTP‑sync mod dk.pool.ntp.org (følger local time)
   - RTC opdateres, anvendes til tidsstempler og “Klokken”‑mode
 - Konfiguration via SD + web
   - wifi.json (SSID/password/kontrollernavn)
