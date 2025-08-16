@@ -21,6 +21,8 @@
 #include <queue>
 #include "lyslog.h"
 #include <ArduinoJson.h>   // behøves til JSON i WebServerHandler
+#include <time.h>
+#include <stdlib.h>
 
 // -------------------- SD-kort pins --------------------
 #define SD_MISO 16
@@ -58,11 +60,12 @@ LysParam lysparam;
 
 // -------------------- NTP / WiFi --------------------
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 2 * 3600, 60000);
+// Offset 0 – vi bruger TZ + localtime() til dansk tid (CET/CEST)
+NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 0, 60000);
 WiFiUDP udp;
 WiFiServer server(80);
 
-// NTP epoch kopi til core1
+// NTP epoch kopi til core1 (UTC)
 volatile uint32_t ntpEpochCopy = 0;
 unsigned long lastPeriodicNtpMs = 0;
 const unsigned long periodicNtpIntervalMs = 60000; // 60 sek
@@ -163,8 +166,9 @@ bool setupWiFiAndNTP() {
     Serial.print("NTP tid (formatted): ");
     Serial.println(timeClient.getFormattedTime());
 
+    // epoch fra NTP er UTC (offset=0); konverter til lokal tid via TZ
     time_t rawTime = timeClient.getEpochTime();
-    struct tm *timeinfo = gmtime(&rawTime);
+    struct tm *timeinfo = localtime(&rawTime);
     datetime_t t = {
         (int16_t)(timeinfo->tm_year + 1900),
         (int8_t)(timeinfo->tm_mon + 1),
@@ -177,11 +181,12 @@ bool setupWiFiAndNTP() {
     rtc_init();
     rtc_set_datetime(&t);
 
+    // Gem UTC-epoch til core1
     mutex_enter_blocking(&epoch_mutex);
     ntpEpochCopy = (uint32_t)rawTime;
     mutex_exit(&epoch_mutex);
 
-    Serial.println("RTC sat ud fra NTP!");
+    Serial.println("RTC sat ud fra NTP (lokal tid via TZ)!");
     return true;
 }
 
@@ -191,8 +196,8 @@ void periodicNtpUpdate() {
     if (now - lastPeriodicNtpMs < ntpupdatetimer) return;
     lastPeriodicNtpMs = now;
     if (timeClient.update()) {
-        time_t rawTime = timeClient.getEpochTime();
-        struct tm *timeinfo = gmtime(&rawTime);
+        time_t rawTime = timeClient.getEpochTime();     // UTC
+        struct tm *timeinfo = localtime(&rawTime);      // lokal tid m. DST
         datetime_t t = {
             (int16_t)(timeinfo->tm_year + 1900),
             (int8_t)(timeinfo->tm_mon + 1),
@@ -204,7 +209,7 @@ void periodicNtpUpdate() {
         };
         rtc_set_datetime(&t);
         mutex_enter_blocking(&epoch_mutex);
-        ntpEpochCopy = (uint32_t)rawTime;
+        ntpEpochCopy = (uint32_t)rawTime;               // hold UTC til beregninger
         mutex_exit(&epoch_mutex);
     }
 }
@@ -251,6 +256,10 @@ void setup() {
 
     delay(1200);
 
+    // Dansk tidszone: CET (UTC+1) og CEST (UTC+2) med EU-regler
+    setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
+    tzset();
+
     // SD init
     SPI.setRX(SD_MISO);
     SPI.setCS(SD_CS);
@@ -277,10 +286,10 @@ void setup() {
         rp2040.reboot();
     }
 
-    // Vis tid læst fra RTC
+    // Vis tid læst fra RTC (lokal)
     datetime_t t;
     rtc_get_datetime(&t);
-    Serial.printf("Tid (RTC): %04d-%02d-%02d %02d:%02d:%02d\n",
+    Serial.printf("Tid (RTC lokal): %04d-%02d-%02d %02d:%02d:%02d\n",
                   t.year, t.month, t.day, t.hour, t.min, t.sec);
 
     fifoTimer->setInterval(10, fifoTimerCallback);
@@ -519,7 +528,7 @@ void loop1() {
 
             uint32_t ntpLocal;
             mutex_enter_blocking(&epoch_mutex);
-            ntpLocal = ntpEpochCopy;
+            ntpLocal = ntpEpochCopy; // UTC
             mutex_exit(&epoch_mutex);
 
             mutex_enter_blocking(&param_mutex);
