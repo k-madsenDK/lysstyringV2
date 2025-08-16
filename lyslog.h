@@ -1,8 +1,8 @@
 /**
  * @file lyslog.h
- * @brief SD-logning af nataktivitet og PIR-events.
+ * @brief SD-logning af nataktivitet, PIR-events og hardware-events.
  *
- * Bruges til at logge events til SD-kortet. Aktiveres/deaktiveres via parametre.
+ * Bruges til at logge events til SD-kortet.
  */
 #pragma once
 
@@ -12,56 +12,42 @@
 
 #define NATLOG_FILENAME "/nataktiv.log"
 #define PIRLOG_FILENAME "/pir.log"
+#define HARDWARELOG_FILENAME "/hardware.log"  // altid aktiv hvis SD er til stede
 
-/**
- * @class LysLog
- * @brief Logger nataktivitet og PIR-events til SD-kort.
- */
 class LysLog {
 public:
-    /**
-     * @param sd Reference til SdFat-objekt
-     * @param natLogEnabled Aktiver nataktiv-logning
-     * @param pirLogEnabled Aktiver PIR-logning
-     */
     LysLog(SdFat &sd, bool natLogEnabled = true, bool pirLogEnabled = true)
         : sd(sd), natLogEnabled(natLogEnabled), pirLogEnabled(pirLogEnabled) {}
-    /**
-     * @brief Log nataktivitet on/off.
-     * @param aktiv true = ON, false = OFF
-     */
+
+    // Nat-aktivitet (respekterer natLogEnabled)
     void logNatAktiv(bool aktiv) {
         if (!natLogEnabled) return;
-        String line = makeTimeLine("NAT_AKTIV_" + String(aktiv ? "ON" : "OFF"));
-        appendToFile(NATLOG_FILENAME, line);
+        appendToFile(NATLOG_FILENAME, makeTimeLine("NAT_AKTIV_" + String(aktiv ? "ON" : "OFF")));
     }
-    /**
-     * @brief Log en PIR-event.
-     * @param pirNavn Navn på PIR (fx "pir 1")
-     */
+
+    // PIR (respekterer pirLogEnabled)
     void logPIR(const String& pirNavn) {
         if (!pirLogEnabled) return;
-        String line = makeTimeLine(pirNavn + "_ACTIVATED");
-        appendToFile(PIRLOG_FILENAME, line);
+        appendToFile(PIRLOG_FILENAME, makeTimeLine(pirNavn + "_ACTIVATED"));
     }
-    /**
-     * @brief Aktiver/deaktiver nataktiv-logning.
-     */
+
+    // Hardware-log (ALTID, hvis SD er til stede)
+    void logHardware(const String& event) {
+        appendToFile(HARDWARELOG_FILENAME, makeTimeLine(event));
+    }
+    void logWatchdogReset()                { logHardware("WATCHDOG_RESET"); }
+    void logI2CReset(const char* bus)      { logHardware(String("I2C_RESET_") + bus); }
+    void logWiFiReconnect(const String& ip){ logHardware(String("WIFI_RECONNECT ") + ip); }
+    void logBootReboot(const char* reason) { logHardware(String("BOOT_REBOOT ") + reason); }
+
     void setLogNatAktiv(bool enabled) { natLogEnabled = enabled; }
-    /**
-     * @brief Aktiver/deaktiver PIR-logning.
-     */    
     void setLogPIRAktiv(bool enabled) { pirLogEnabled = enabled; }
 
 private:
     SdFat &sd;
     bool natLogEnabled;
     bool pirLogEnabled;
-    /**
-     * @brief Lav tidsstempel-linje.
-     * @param event Event-beskrivelse
-     * @return Linje til log
-     */
+
     String makeTimeLine(const String& event) {
         datetime_t t;
         rtc_get_datetime(&t);
@@ -70,13 +56,11 @@ private:
                  t.year, t.month, t.day, t.hour, t.min, t.sec);
         return "[" + String(tidBuf) + "] " + event + "\n";
     }
-    /**
-     * @brief Appender linje til fil på SD-kort.
-     */
+
     void appendToFile(const char *filename, const String& line) {
-        FsFile file = sd.open(filename, FILE_WRITE); // FILE_WRITE appender!
+        FsFile file = sd.open(filename, FILE_WRITE); // FILE_WRITE appender
         if (file) {
-            file.seekEnd(); // Gå til slutningen af filen
+            file.seekEnd();
             file.print(line);
             file.close();
         }

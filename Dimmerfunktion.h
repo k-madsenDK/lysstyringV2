@@ -1,17 +1,7 @@
-/**
- * @file Dimmerfunktion.h
- * @brief Klasse til styring af dimmer med softstart/sluk og PWM.
- *
- * Bruges til at styre en relæ- og PWM-baseret lysdæmper til 220V.
- */
 #pragma once
 #include <Arduino.h>
-#include "LysParam.h"  // Tilføjet for at få adgang til aktuelStepfrekvens
+#include "LysParam.h"
 
-/**
- * @class dimmerfunktion
- * @brief PWM og relæstyring med softstart/softsluk for glødelampe/dimmer.
- */
 class dimmerfunktion {
   private:
     int pwmstartvaerdi;
@@ -21,41 +11,35 @@ class dimmerfunktion {
     int pwmben;
     int aktuelpwmvaerdi = 0;
     int aktuelprocentvaerdi = 0;
-    
-    // Softstart/sluk variabler
+
     bool softstart_aktiv = false;
     bool softsluk_aktiv = false;
-    int soft_slut = 100;
-    int soft_step = 5;
-    int soft_nuvaerende = 0;
-    int aktuelsetvaerdi = 0;
-    LysParam* lysparam_ptr = nullptr; // pointer til LysParam
+    int  soft_slut = 100;
+    int  soft_step = 5;
+    int  soft_nuvaerende = 0;
+    int  aktuelsetvaerdi = 0;
 
-    void dimmerinit(){
+    LysParam* lysparam_ptr = nullptr; // Pointer til konfig (giver dynamisk step)
+
+    void dimmerinit() {
       analogWriteRange(65535);
       analogWriteFreq(10000);
       analogWrite(pwmben, aktuelpwmvaerdi);
       pinMode(relayben, OUTPUT);
       digitalWrite(relayben, 0);
-      this->enprocent = (pwmmaxvaerdi - pwmstartvaerdi) / 100;
+      enprocent = (pwmmaxvaerdi - pwmstartvaerdi) / 100;
     }
 
-    // Sikker relæstyring
     void relayOn()  { digitalWrite(relayben, 1); }
     void relayOff() { digitalWrite(relayben, 0); }
 
-    /**
-     * @brief Sæt lysstyrke i procent (direkte, uden softstart)
-     */
     bool setlysiprocent(int nyvaerdi) {
       if (nyvaerdi < 0 || nyvaerdi > 100) return false;
-      Serial.print("Ny lysværdi = ");Serial.println(nyvaerdi);
       aktuelprocentvaerdi = nyvaerdi;
-      if(nyvaerdi == 0){
+      if (nyvaerdi == 0) {
         aktuelsetvaerdi = 0;
-        aktuelprocentvaerdi = 0;
         aktuelpwmvaerdi = 0;
-        analogWrite(pwmben, aktuelpwmvaerdi);
+        analogWrite(pwmben, 0);
         relayOff();
         return true;
       }
@@ -64,56 +48,38 @@ class dimmerfunktion {
       relayOn();
       return true;
     }
-    
+
+    int hentStep() const {
+      if (lysparam_ptr && lysparam_ptr->aktuelStepfrekvens > 0)
+        return lysparam_ptr->aktuelStepfrekvens;
+      return 5;
+    }
+
   public:
-      /**
-     * @brief Constructor, angiv ben og område.
-     */
-    dimmerfunktion(int relayben = 2, int pwmben = 0, int pwmlow = 0, int pwmhigh = 65535, LysParam* lysparam = nullptr) {
-      this->relayben = relayben;
-      this->pwmben = pwmben;
-      this->pwmstartvaerdi = pwmlow;
-      this->pwmmaxvaerdi = pwmhigh;
-      this->lysparam_ptr = lysparam;
-      this->dimmerinit();
+    dimmerfunktion(int relayben = 2,
+                   int pwmben = 0,
+                   int pwmlow = 0,
+                   int pwmhigh = 65535,
+                   LysParam* lysparam = nullptr)
+    : relayben(relayben), pwmben(pwmben),
+      pwmstartvaerdi(pwmlow), pwmmaxvaerdi(pwmhigh),
+      lysparam_ptr(lysparam) {
+      dimmerinit();
     }
 
-    // Hvis objektet ikke blev oprettet med LysParam, tilføj mulighed for at sætte pointer senere
-    void setLysParam(LysParam* param) {
-      this->lysparam_ptr = param;
-    }
-    /**
-     * @brief Sluk lyset (indirekte).
-     */
-    void sluk(void) {
-      this->setlysiprocentSoft(0);
-    }
-     /**
-     * @brief Tænd lyset (indirekte, 100%).
-     */
-    void taend(void) {
-      this->setlysiprocentSoft(100);
-    }
+    void setLysParam(LysParam* p) { lysparam_ptr = p; }
 
-    /**
-     * @brief Start softstart mod slutProcent.
-     */
+    void sluk()  { setlysiprocentSoft(0); }
+    void taend() { setlysiprocentSoft(100); }
+
     void startSoftStart(int slutProcent = 100) {
       softstart_aktiv = true;
       softsluk_aktiv = false;
       soft_slut = slutProcent;
-      // Brug step fra lysparam hvis tilgængelig
-      if (lysparam_ptr) {
-        soft_step = lysparam_ptr->aktuelStepfrekvens;
-      }else {
-        soft_step = 5;
-      }
+      soft_step = hentStep();
       soft_nuvaerende = aktuelprocentvaerdi;
     }
 
-    /**
-     * @brief Et step mod softstart-mål.
-     */
     void softstartStep() {
       if (!softstart_aktiv) return;
       soft_nuvaerende += soft_step;
@@ -124,28 +90,17 @@ class dimmerfunktion {
         setlysiprocent(soft_nuvaerende);
       }
     }
-    /**
-     * @brief Er softstart kørende?
-     */
+
     bool softstartAktiv() { return softstart_aktiv; }
 
-    /**
-     * @brief Start softsluk mod slutProcent.
-     */
-    void startSoftSluk(int slutProcent ) {
+    void startSoftSluk(int slutProcent) {
       softsluk_aktiv = true;
       softstart_aktiv = false;
       soft_slut = slutProcent;
-      // Brug step fra lysparam hvis tilgængelig
-      if (lysparam_ptr) {
-        soft_step = lysparam_ptr->aktuelStepfrekvens;
-      } 
+      soft_step = hentStep();
       soft_nuvaerende = aktuelprocentvaerdi;
     }
-    
-    /**
-     * @brief Et step mod softsluk-mål.
-     */
+
     void softslukStep() {
       if (!softsluk_aktiv) return;
       soft_nuvaerende -= soft_step;
@@ -157,36 +112,18 @@ class dimmerfunktion {
       }
     }
 
-     /**
-     * @brief Skift til ny værdi med softstart/sluk.
-     */
     void setlysiprocentSoft(int nyvaerdi) {
       if (nyvaerdi < 0 || nyvaerdi > 100) return;
       aktuelsetvaerdi = nyvaerdi;
-      Serial.print("Ny setlysværdi = ");Serial.println(nyvaerdi);
       if (nyvaerdi > aktuelprocentvaerdi) {
         startSoftStart(nyvaerdi);
       } else if (nyvaerdi < aktuelprocentvaerdi) {
         startSoftSluk(nyvaerdi);
-      } 
+      } // hvis lig med: ingen ændring
     }
 
-    /**
-     * @brief Er softsluk kørende?
-     */    
     bool softslukAktiv() { return softsluk_aktiv; }
 
-        /**
-     * @brief Returnér senest satte værdi.
-     */
-    int returnersetvaerdi(void) {
-      return aktuelsetvaerdi;
-    }
-
-    /**
-     * @brief Returnér aktuelle værdi.
-     */
-    int returneraktuelvaerdi(void){
-      return aktuelprocentvaerdi;
-    }
+    int returnersetvaerdi()      { return aktuelsetvaerdi; }
+    int returneraktuelvaerdi()   { return aktuelprocentvaerdi; }
 };

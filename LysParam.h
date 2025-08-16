@@ -6,11 +6,26 @@
  */
 #pragma once
 #include <Arduino.h>
+
 /**
  * @enum lyslogstate
  * @brief Mulige log-events (bruges til FIFO mellem cores).
  */
-enum lyslogstate {nataktivfalse,nataktivtrue,pir1_detection,pir2_detection,hwsw_on,swsw_on};
+enum lyslogstate {
+    nataktivfalse,
+    nataktivtrue,
+    pir1_detection,
+    pir2_detection,
+    hwsw_on,
+    swsw_on,
+    hwsw_off,
+    swsw_off,
+    // Hardware-/system-events:
+    wdt_reset,          // Watchdog reset opdaget ved boot (core1)
+    i2c_reset_wire,     // I2C recover udført på Wire (BH1750)
+    i2c_reset_wire1     // I2C recover udført på Wire1 (BMP280)
+};
+
 /**
  * @struct LysParam
  * @brief Samler alle brugerparametre til automatik, log og hardware.
@@ -30,5 +45,5 @@ struct LysParam {
     int slutKlokkeMinutter = 0;
     bool lognataktiv = true;
     bool logpirdetection = true;
-    int aktuelStepfrekvens = 5;   // <-- NYT
+    int aktuelStepfrekvens = 5;
 };

@@ -11,9 +11,12 @@
 #pragma once
 #include <WiFi.h>
 #include <Arduino.h>
-#include "LysParam.h" // bruges af begge core
+#include <ArduinoJson.h>     // Til JsonDocument i sendStatusJSON
+#include <vector>            // Bruges i handleUpload
+#include "LysParam.h"        // bruges af begge core
 #include "mitjason.h"
 #include <SdFat.h>
+#include "lyslog.h"          // Direkte logging på core0
 
 // Eksterne variabler fra main/core1, mutexbeskyttelse påkrævet hvis der skrives/ændres!
 extern mutex_t lys_mutex;
@@ -21,6 +24,7 @@ extern mutex_t nat_mutex;
 extern mutex_t param_mutex;
 extern mutex_t pir_mutex;
 
+extern LysLog* lyslog;       // global logger fra core0
 extern LysParam lysparam;
 LysParam lysparamWeb;         ///< Midlertidig kopi til webformular
 
@@ -58,6 +62,7 @@ public:
     int& aktuellysvaerdi;    ///< PWM-lysværdi
     float& internaltemp;     ///< Intern CPU-temp
     bool& lys_permanet_on;   ///< Om lyset er permanent ON
+    bool& hardware_aktiv;    ///< HW-switch status (reference til global)
     float& aktuellux;        ///< Aktuel målt lux
     float& aktueltemp;       ///< Aktuel temperatur
     float& aktuelpress;      ///< Aktuelt lufttryk
@@ -70,21 +75,24 @@ public:
     String* hwsw_tid;        ///< Tid for sidste HW-switch-event
     
     WebServerHandler(
-        int& lys, float& temp, bool& lys_on, float& aktuel_lux, float& aktuel_temp,
-        float& aktuel_press, bool& software_active, bool& updatelysprocent,
-        int& nyupdatevaerdi, bool& natstatus ,String* pir1txt, String* pir2txt, String* hwswtxt
+        int& lys, float& temp, bool& lys_on, bool& hwsw_active,  // hwsw_active som reference
+        float& aktuel_lux, float& aktuel_temp, float& aktuel_press,
+        bool& software_active, bool& updatelysprocent,
+        int& nyupdatevaerdi, bool& natstatus, String* pir1txt, String* pir2txt, String* hwswtxt
     )
-        : aktuellysvaerdi(lys), internaltemp(temp), lys_permanet_on(lys_on), aktuellux(aktuel_lux),
+        : aktuellysvaerdi(lys), internaltemp(temp), lys_permanet_on(lys_on),
+          hardware_aktiv(hwsw_active), aktuellux(aktuel_lux),
           aktueltemp(aktuel_temp), aktuelpress(aktuel_press), softwarehardset(software_active),
-          opdaterlys(updatelysprocent), nylysvaerdi(nyupdatevaerdi), nataktivstatus(natstatus) , pir1_tid(pir1txt), pir2_tid(pir2txt), hwsw_tid(hwswtxt)
+          opdaterlys(updatelysprocent), nylysvaerdi(nyupdatevaerdi), nataktivstatus(natstatus),
+          pir1_tid(pir1txt), pir2_tid(pir2txt), hwsw_tid(hwswtxt)
     {}
     
-        void nylysvaerdiCore1(int vaerdi ,bool swstate){
-         mutex_enter_blocking(&lys_mutex);
-         nylysvaerdi = vaerdi;
-         opdaterlys = true;
-         softwarehardset = swstate;
-         mutex_exit(&lys_mutex);
+    void nylysvaerdiCore1(int vaerdi ,bool swstate){
+        mutex_enter_blocking(&lys_mutex);
+        nylysvaerdi = vaerdi;
+        opdaterlys = true;
+        softwarehardset = swstate;
+        mutex_exit(&lys_mutex);
     }
 
     void handle(WiFiClient& client, const String& req) {
@@ -103,11 +111,29 @@ public:
             }
             sendOK(client);
         } else if (req.indexOf("GET /on.htm") >= 0) {
-            softwarehardset = true;
+            if (!softwarehardset) { // log første gang soft-lås aktiveres
+                bool doLog = false;
+                mutex_enter_blocking(&param_mutex);
+                doLog = lysparam.logpirdetection;
+                mutex_exit(&param_mutex);
+                if (doLog && lyslog) {
+                    lyslog->logPIR("Software on");
+                }
+                softwarehardset = true;
+            }
             sendOK(client);
         } else if (req.indexOf("GET /off.htm") >= 0) {
-            if(!softwarehardset) nylysvaerdiCore1(0 , false);
-            softwarehardset = false;
+            if(!hardware_aktiv) nylysvaerdiCore1(0 , false);
+            if (softwarehardset) { 
+                bool doLog = false;
+                mutex_enter_blocking(&param_mutex);
+                doLog = lysparam.logpirdetection;
+                mutex_exit(&param_mutex);
+                if (doLog && lyslog) {
+                    lyslog->logPIR("Software off");
+                }
+                softwarehardset = false;
+            }
             sendOK(client);
         } else if (req.indexOf("GET /status.htm") >= 0) {
             sendStatus(client);
@@ -142,12 +168,12 @@ public:
 
 /*
  * client.print("<p>M&aring;lt LUX v&aelig;rdi = "); client.print(aktuellux); client.println("</p>");
-client.print("<p>M&aring;lt temperatur = "); client.print(aktueltemp); client.println(" &deg;C</p>");
-client.print("<p>M&aring;lt Barometertryk = "); client.print(aktuelpress); client.println(" hPa</p>");
-client.print("<p>M&aring;lt Intern cpu temperatur = "); client.print(internaltemp); client.println(" C</p>");
- * */
+ * client.print("<p>M&aring;lt temperatur = "); client.print(aktueltemp); client.println(" &deg;C</p>");
+ * client.print("<p>M&aring;lt Barometertryk = "); client.print(aktuelpress); client.println(" hPa</p>");
+ * client.print("<p>M&aring;lt Intern cpu temperatur = "); client.print(internaltemp); client.println(" C</p>");
+ */
 void sendIndex(WiFiClient& client) {
-    client.print(
+    client.print(F(
         "<!DOCTYPE html><html lang=\"dk\"><head>"
         "<meta charset=\"utf-8\" />"
         "<title>Kontrol panel</title>"
@@ -167,9 +193,9 @@ void sendIndex(WiFiClient& client) {
         "<button class=\"button buttonoff\" id=\"offBtn\" title=\"Soft OFF slukker lyset og returnerer til automatik. For service: afbryd strømmen.\n Hvis lys_permanet_on  Ja brug denne knap til at returnere til automode \">Soft OFF</button>"
         "</p>"
         "<h2>Variabel Lysværdi i %</h2>"
-        "<p><input type=\"range\" min=\"0\" max=\"100\" class=\"slider\" title=\"Slideren kan anvedes på 2 måder ved brug i automode vil den rette den aktuelle lysværdi dette resettes ved n&aelig;ste skift i logiken\n Bruges den når ON har v&aelig;ret brugt / lux v&aelig;rdien > setpunktet sættes systemet i l&aring;st mode og kan kun resettes af Softoff  \" id=\"Lysslider\" value=\"");
+        "<p><input type=\"range\" min=\"0\" max=\"100\" class=\"slider\" title=\"Slideren kan anvedes på 2 måder ved brug i automode vil den rette den aktuelle lysværdi dette resettes ved n&aelig;ste skift i logiken\n Bruges den når ON har v&aelig;ret brugt / lux v&aelig;rdien > setpunktet sættes systemet i l&aring;st mode og kan kun resettes af Softoff  \" id=\"Lysslider\" value=\""));
     client.print(aktuellysvaerdi);
-    client.print(
+    client.print(F(
         "\"></p>"
         "<p>Value: <span id=\"demo\"></span></p>"
         "<p>valgt mode <span id=\"demovalg\">OFF</span></p>"
@@ -257,7 +283,7 @@ void sendIndex(WiFiClient& client) {
         "});"
         "</script>"
         "</body></html>"
-    );
+    ));
 }
   
     void sendStatus(WiFiClient& client) {
@@ -335,28 +361,27 @@ void sendOpsaetning(WiFiClient& client) {
     </div>
     <div class="slider-block">
       <label for="pwmg">PwmG (%):</label>
-      <input type="range" id="pwmg" title="styrken som anvendes efter TimerA / Klokken er paseret indtil Lux g&aring;r over Togglepunkt" name="pwmg" min="0" max="100" value="%PWMG%">
+      <input type="range" id="pwmg" title="styrken som anvendes efter TimerA / Klokken er paseret indtil Lux g&aring;r over Lux startv&aelig;rdi" name="pwmg" min="0" max="100" value="%PWMG%">
       <span class="value" id="val_pwmg">%PWMG%</span>
     </div>
     <div class="slider-block">
-      <label for="toggle">Togglepunkt LUX:</label>
-      <input type="range" id="toggle" title="skift mellem nat og dag" name="toggle" min="0" max="100" step="1" value="%LUX%">
-      <span class="value" id="val_toggle">%LUX%</span>
+      <label for="luxstart">Lux startværdi (LUX):</label>
+      <input type="range" id="luxstart" title="Skift mellem nat og dag starter under denne værdi" name="luxstart" min="0" max="100" step="1" value="%LUX%">
+      <span class="value" id="val_luxstart">%LUX%</span>
     </div>
     <div class="slider-block">
       <label for="delay">Delay (sek):</label>
-      <input type="range" id="delay" title="tiden som lux skal v&aelig;re under Togglepunkt f&oslash;r TimerA starter " name="delay" min="0" max="200" value="%NATDAG%">
+      <input type="range" id="delay" title="Tid som lux skal v&aelig;re under Lux startv&aelig;rdi f&oslash;r TimerA starter" name="delay" min="0" max="200" value="%NATDAG%">
       <span class="value" id="val_delay">%NATDAG%</span>
     </div>
-    <!-- NYT: Softlys step slider -->
     <div class="slider-block">
       <label for="stepfrekvens">Softlys step:</label>
-      <input type="range" id="stepfrekvens" name="stepfrekvens" min="1" max="10" value="%SOFTSTEP%">
+      <input type="range" id="stepfrekvens" title="Størrelsen på step stigning / reduktion i % " name="stepfrekvens" min="1" max="10" value="%SOFTSTEP%">
       <span class="value" id="val_stepfrekvens">%SOFTSTEP%</span>
     </div>
     <div class="slider-block">
       <label for="timera">TimerA (sek):</label>
-      <input type="number" id="timera" title="Tiden TimerA er aktiveret Aktiveres af togglemode i Tidsmode" name="timera" min="0" max="65535" value="%TIMERA%" style="width:80px;">
+      <input type="number" id="timera" title="Tiden TimerA er aktiveret Aktiveres af luxstart i Tidsmode" name="timera" min="0" max="65535" value="%TIMERA%" style="width:80px;">
     </div>
     <div class="slider-block">
       <label for="timerc">TimerC (sek):</label>
@@ -368,8 +393,8 @@ void sendOpsaetning(WiFiClient& client) {
     </div>
     <div class="slider-block">
       <label for="klokkentimer">Klokken (timer:min):</label>
-      <input type="number" id="klokkentimer" title="Slut tidspunkt hvis man &oslash;nsker samme tispunkt &aring;ret rundt" name="klokkentimer" min="0" max="23" value="%KLOKKETIMER%" style="width:40px;"> :
-      <input type="number" id="klokkenminutter" title="Slut tidspunkt hvis man &oslash;nsker samme tispunkt &aring;ret rundt"  name="klokkenminutter" min="0" max="59" value="%KLOKKEMINUTTER%" style="width:40px;">
+      <input type="number" id="klokkentimer" title="Slut tidspunkt hvis man &oslash;nsker samme tidspunkt &aring;ret rundt" name="klokkentimer" min="0" max="23" value="%KLOKKETIMER%" style="width:40px;"> :
+      <input type="number" id="klokkenminutter" title="Slut tidspunkt hvis man &oslash;nsker samme tidspunkt &aring;ret rundt"  name="klokkenminutter" min="0" max="59" value="%KLOKKEMINUTTER%" style="width:40px;">
     </div>
     <div class="mode-block">
       <label for="modeselect">Styringsmode:</label>
@@ -377,16 +402,17 @@ void sendOpsaetning(WiFiClient& client) {
       <input type="radio" id="klokken" title="Samme afslutnings tidspunkt &aring;ret rundt" name="modeselect" value="Klokken" %MODEKLOKKEN%> Klokken
     </div>
     <div style="text-align:center;">
-      <input type="submit" title="Opdater v&aelig;rdierne" value="Gem opsætning">
+      <input type="submit" style=" font-size:15px;" title="Opdater v&aelig;rdierne" value="Gem opsætning"><button style=" font-size:15px;" title="retur til index" onclick="index()">Kontrol panel</button>
     </div>
   </form>
   <script>
+    function index() { location.replace('/index.htm');}
     function updateValues() {
       document.getElementById('val_pwma').textContent = pwma.value;
       document.getElementById('val_pwmc').textContent = pwmc.value;
       document.getElementById('val_pwme').textContent = pwme.value;
       document.getElementById('val_pwmg').textContent = pwmg.value;
-      document.getElementById('val_toggle').textContent = toggle.value;
+      document.getElementById('val_luxstart').textContent = luxstart.value;
       document.getElementById('val_delay').textContent = delay.value;
       document.getElementById('val_stepfrekvens').textContent = stepfrekvens.value;
     }
@@ -403,7 +429,7 @@ void sendOpsaetning(WiFiClient& client) {
     html.replace("%PWMG%", String(lysparamWeb.pwmG));
     html.replace("%LUX%", String(int(lysparamWeb.luxstartvaerdi)));
     html.replace("%NATDAG%", String(lysparamWeb.natdagdelay));
-    html.replace("%SOFTSTEP%", String(lysparamWeb.aktuelStepfrekvens)); // NYT
+    html.replace("%SOFTSTEP%", String(lysparamWeb.aktuelStepfrekvens));
     html.replace("%TIMERA%", String(lysparamWeb.timerA));
     html.replace("%TIMERC%", String(lysparamWeb.timerC));
     html.replace("%TIMERE%", String(lysparamWeb.timerE));
@@ -444,9 +470,11 @@ void processOpsaetData(WiFiClient& client, const String& req) {
     EXTRACT_INT_PARAM(pwmc, lysparamWeb.pwmC);
     EXTRACT_INT_PARAM(pwme, lysparamWeb.pwmE);
     EXTRACT_INT_PARAM(pwmg, lysparamWeb.pwmG);
-    EXTRACT_INT_PARAM(toggle, lysparamWeb.luxstartvaerdi);
+    // Backcompat + nyt felt
+    EXTRACT_INT_PARAM(toggle,   lysparamWeb.luxstartvaerdi);
+    EXTRACT_INT_PARAM(luxstart, lysparamWeb.luxstartvaerdi);
     EXTRACT_INT_PARAM(delay, lysparamWeb.natdagdelay);
-    EXTRACT_INT_PARAM(stepfrekvens, lysparamWeb.aktuelStepfrekvens); // NYT
+    EXTRACT_INT_PARAM(stepfrekvens, lysparamWeb.aktuelStepfrekvens);
     EXTRACT_INT_PARAM(timera, lysparamWeb.timerA);
     EXTRACT_INT_PARAM(timerc, lysparamWeb.timerC);
     EXTRACT_INT_PARAM(timere, lysparamWeb.timerE);
@@ -496,7 +524,7 @@ void sendStatusJSON(WiFiClient& client) {
     mutex_enter_blocking(&param_mutex);
     doc["softstep"] = lysparam.aktuelStepfrekvens;
     mutex_exit(&param_mutex);
-    // Tilføj evt. flere relevante værdier her...
+
     String vis;
     serializeJsonPretty(doc, vis);
     client.println("HTTP/1.1 200 OK");
@@ -544,8 +572,11 @@ void sendLogConfig(WiFiClient& client) {
                 <option value="0" %LOGPIRDETECTION_OFF%>Deaktiveret</option>
             </select>
         </div>
-        <button type="submit" title="Opdater status">Gem</button>
+        <button type="submit" style=" font-size:15px;" title="Opdater status">Gem</button><button style=" font-size:15px;" title="retur til index" onclick="index()">Kontrol panel</button>
     </form>
+   <script>
+   function index() { location.replace('/index.htm');}
+   </script>
 </body>
 </html>
 )rawliteral";
@@ -563,7 +594,6 @@ void sendLogConfig(WiFiClient& client) {
 }
 
 void handleGemLogConfig(WiFiClient& client, const String& req) {
-    // Eksempel: GET /gemlogconfig.htm?lognataktiv=1&logpirdetection=0
     int idx1 = req.indexOf("lognataktiv=");
     int idx2 = req.indexOf("logpirdetection=");
 
@@ -579,7 +609,6 @@ void handleGemLogConfig(WiFiClient& client, const String& req) {
         logpirdetection = (val == '1');
     }
 
-    // Gem i din config
     mutex_enter_blocking(&param_mutex);
     lysparam.lognataktiv = lognataktiv;
     lysparam.logpirdetection = logpirdetection;
@@ -587,16 +616,13 @@ void handleGemLogConfig(WiFiClient& client, const String& req) {
     mutex_exit(&param_mutex);
     mitjason->saveDefault(sd,&lysparamWeb);
 
-    // Gem evt til SD, fx: mitjason->saveDefault(sd, &lysparamWeb);
-
-    // Redirect tilbage til logconfig.htm
     client.println("HTTP/1.1 303 See Other");
     client.println("Location: /index.htm");
     client.println();
 }
 
 void sendFileBrowserPage(WiFiClient& client) {
-        String page = R"rawliteral(
+    String page = R"rawliteral(
 <!DOCTYPE html>
 <html lang="da">
 <head>
@@ -629,9 +655,13 @@ void sendFileBrowserPage(WiFiClient& client) {
     </thead>
     <tbody id="tbody"></tbody>
   </table>
+  <div style="text-align:center;">
+  <button style=" font-size:15px;" title="retur til index" onclick="index()">Kontrol panel</button>
+  </div>
 <script>
 let currentPath = "/";
 
+function index() { location.replace('/index.htm');}
 function loadDir(path) {
   fetch("/dirlist?path=" + encodeURIComponent(path))
     .then(resp => resp.json())
@@ -687,19 +717,13 @@ window.onload = () => loadDir("/");
 </body>
 </html>
 )rawliteral";
-        client.println("HTTP/1.1 200 OK");
-        client.println("Content-Type: text/html");
-        client.println();
-        client.print(page);
-    }
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println();
+    client.print(page);
+}
 
-    // Directory listing handler
-
-
-  // Directory listing handler
 void handleDirList(WiFiClient& client, const String& req) {
-    // Find kun den første linje (GET ...)
-
     int lineEnd = req.indexOf("\r\n");
     String requestLine = (lineEnd > 0) ? req.substring(0, lineEnd) : req;
     String path = extractPathFromRequestLine(requestLine);
@@ -746,7 +770,6 @@ void handleDirList(WiFiClient& client, const String& req) {
     client.print(json);
 }
 
-    // Delete handler
 void handleDelete(WiFiClient& client, const String& req) {
     int lineEnd = req.indexOf("\r\n");
     String requestLine = (lineEnd > 0) ? req.substring(0, lineEnd) : req;
@@ -761,11 +784,7 @@ void handleDelete(WiFiClient& client, const String& req) {
     client.println(ok ? "OK" : "FEJL");
 }
 
-   // Download handler
 void handleDownload(WiFiClient& client, const String& req) {
-    // Tag kun GET-linjen
-
-    // Find path-param
     int lineEnd = req.indexOf("\r\n");
     String requestLine = (lineEnd > 0) ? req.substring(0, lineEnd) : req;
     String path = extractPathFromRequestLine(requestLine);
@@ -794,258 +813,226 @@ void handleDownload(WiFiClient& client, const String& req) {
     }
     file.close();
 }
-    // --- Multipart/form-data upload handler ---
-// ... resten af klassen ...
 
-// Multipart/form-data upload handler – buffer-baseret og robust
-// Multipart/form-data upload handler – robust, flere filer, auto-mkdir, logging
-    void handleUpload(WiFiClient& client, const String& req) {
-        Serial.println("Upload valgt");
+void handleUpload(WiFiClient& client, const String& req) {
+    Serial.println("Upload valgt");
 
-        // 1. Find boundary fra headers (req)
-        int boundaryPos = req.indexOf("boundary=");
-        if (boundaryPos < 0) {
-            client.println("HTTP/1.1 400 Bad Request\r\n\r\nMissing boundary");
-            Serial.println("Missing boundary!");
-            return;
-        }
-        String boundary = "--" + req.substring(boundaryPos + 9, req.indexOf('\r', boundaryPos));
-        String boundaryFinal = boundary + "--";
-        Serial.print("Boundary: "); Serial.println(boundary);
+    int boundaryPos = req.indexOf("boundary=");
+    if (boundaryPos < 0) {
+        client.println("HTTP/1.1 400 Bad Request\r\n\r\nMissing boundary");
+        return;
+    }
+    String boundary = "--" + req.substring(boundaryPos + 9, req.indexOf('\r', boundaryPos));
+    String boundaryFinal = boundary + "--";
 
-        // 2. Find Content-Length
-        int clPos = req.indexOf("Content-Length: ");
-        int contentLen = -1;
-        if (clPos >= 0) {
-            int clEnd = req.indexOf('\r', clPos);
-            contentLen = req.substring(clPos + 16, clEnd).toInt();
-        }
-        Serial.print("Content-Length: "); Serial.println(contentLen);
+    int clPos = req.indexOf("Content-Length: ");
+    int contentLen = -1;
+    if (clPos >= 0) {
+        int clEnd = req.indexOf('\r', clPos);
+        contentLen = req.substring(clPos + 16, clEnd).toInt();
+    }
 
-        // 3. Find body-start (efter første \r\n\r\n)
-        int bodyStart = req.indexOf("\r\n\r\n");
-        if (bodyStart < 0) {
-            client.println("HTTP/1.1 400 Bad Request\r\n\r\nNo body");
-            Serial.println("Ingen body i req!");
-            return;
-        }
-        bodyStart += 4;
-        size_t alreadyRead = req.length() - bodyStart;
+    int bodyStart = req.indexOf("\r\n\r\n");
+    if (bodyStart < 0) {
+        client.println("HTTP/1.1 400 Bad Request\r\n\r\nNo body");
+        return;
+    }
+    bodyStart += 4;
+    size_t alreadyRead = req.length() - bodyStart;
 
-        // 4. Opsæt buffer og parsing-state
-        static const size_t BUFSIZE = 2048;
-        std::vector<uint8_t> buffer;
-        buffer.reserve(BUFSIZE * 2);
-        size_t bufPos = 0;
+    static const size_t BUFSIZE = 2048;
+    std::vector<uint8_t> buffer;
+    buffer.reserve(BUFSIZE * 2);
+    size_t bufPos = 0;
 
-        // Læs evt. allerede læst body fra req-buffer
-        if (alreadyRead > 0) {
-            buffer.insert(buffer.end(), req.c_str() + bodyStart, req.c_str() + req.length());
-            bufPos += alreadyRead;
-        }
+    if (alreadyRead > 0) {
+        buffer.insert(buffer.end(), req.c_str() + bodyStart, req.c_str() + req.length());
+        bufPos += alreadyRead;
+    }
 
-        size_t totalBytesRead = alreadyRead;
-        size_t totalBytesToRead = (contentLen > 0) ? contentLen : 0x7FFFFFFF;
+    size_t totalBytesRead = alreadyRead;
+    size_t totalBytesToRead = (contentLen > 0) ? contentLen : 0x7FFFFFFF;
 
-        enum ParseState { WAIT_BOUNDARY, READ_HEADERS, READ_DATA };
-        ParseState state = WAIT_BOUNDARY;
+    enum ParseState { WAIT_BOUNDARY, READ_HEADERS, READ_DATA };
+    ParseState state = WAIT_BOUNDARY;
 
-        String curFilename, curPath = "/";
-        String lastUploadPath = "/";
-        FsFile curFile;
-        size_t fileBytesWritten = 0;
-        bool isPathField = false;
-        String formFieldName;
+    String curFilename, curPath = "/";
+    String lastUploadPath = "/";
+    FsFile curFile;
+    size_t fileBytesWritten = 0;
+    bool isPathField = false;
+    String formFieldName;
 
-        // Helper: Opret alle nødvendige undermapper til en given sti
-        auto ensureDirs = [](const String& fullpath) {
-            int lastSlash = fullpath.lastIndexOf('/');
-            if (lastSlash <= 0) return;
-            String dir = fullpath.substring(0, lastSlash);
-            String build = "";
-            for (size_t i = 1; i < dir.length(); ++i) {
-                if (dir[i] == '/' || i == dir.length() - 1) {
-                    size_t end = (i == dir.length() - 1) ? i + 1 : i;
-                    build = dir.substring(0, end);
-                    if (!sd.exists(build.c_str())) {
-                        if (!sd.mkdir(build.c_str())) {
-                            Serial.print("Kunne ikke oprette mappe: "); Serial.println(build);
-                        } else {
-                            Serial.print("Oprettet mappe: "); Serial.println(build);
-                        }
-                    }
-                }
-            }
-        };
-
-        // Hjælpefunktion: Find boundary i buffer (robust, også hvis splittet over flere reads)
-        auto findBoundary = [&](const std::vector<uint8_t>& buf, const String& b, size_t start=0) -> int {
-            if (b.length() == 0 || buf.size() < b.length()) return -1;
-            for (size_t i = start; i <= buf.size() - b.length(); ++i) {
-                bool match = true;
-                for (size_t j = 0; j < b.length(); ++j) {
-                    if (buf[i + j] != (uint8_t)b[j]) { match = false; break; }
-                }
-                if (match) return i;
-            }
-            return -1;
-        };
-
-        // Hjælpefunktion: Find linje (\r\n) i buffer
-        auto findCRLF = [](const std::vector<uint8_t>& buf, size_t start) -> int {
-            for (size_t i = start; i + 1 < buf.size(); ++i) {
-                if (buf[i] == 13 && buf[i+1] == 10) return i;
-            }
-            return -1;
-        };
-
-        bool done = false, anyFile = false;
-
-        while (!done && totalBytesRead < totalBytesToRead) {
-            // Fyld buffer op hvis der mangler
-            if (buffer.size() < BUFSIZE && totalBytesRead < totalBytesToRead) {
-                uint8_t tmp[BUFSIZE];
-                int n = client.read(tmp, BUFSIZE);
-                if (n > 0) {
-                    buffer.insert(buffer.end(), tmp, tmp + n);
-                    totalBytesRead += n;
-                } else {
-                    delay(1);
-                }
-            }
-
-            switch (state) {
-                case WAIT_BOUNDARY: {
-                    int bstart = findBoundary(buffer, boundary, 0);
-                    if (bstart < 0) {
-                        // Trunk boundary? Hold max boundary.length bytes i buffer
-                        if (buffer.size() > boundary.length())
-                            buffer.erase(buffer.begin(), buffer.end() - boundary.length());
-                        break;
-                    }
-                    bufPos = bstart + boundary.length();
-                    // Fjern evt. \r\n eller -- (final boundary)
-                    if (bufPos + 2 <= buffer.size() && buffer[bufPos] == 13 && buffer[bufPos+1] == 10) bufPos += 2;
-                    if (bufPos + 2 <= buffer.size() && buffer[bufPos] == '-' && buffer[bufPos+1] == '-') {
-                        done = true; // Final boundary
-                        break;
-                    }
-                    state = READ_HEADERS;
-                    buffer.erase(buffer.begin(), buffer.begin() + bufPos);
-                    bufPos = 0;
-                    break;
-                }
-                case READ_HEADERS: {
-                    // Læs linjer indtil blank linje (\r\n)
-                    String headers = "";
-                    while (true) {
-                        int crlf = findCRLF(buffer, bufPos);
-                        if (crlf < 0) break; // vent på mere data
-                        if (crlf == (int)bufPos) { // blank linje
-                            bufPos += 2;
-                            break;
-                        }
-                        String line((char*)&buffer[bufPos], crlf-bufPos);
-                        headers += line + "\n";
-                        bufPos = crlf + 2;
-                    }
-                    // Hvis ikke blank linje fundet, vent på mere data
-                    if (bufPos == 0 || (bufPos > buffer.size())) break;
-
-                    // Udtræk feltnavn og evt. filename
-                    int namePos = headers.indexOf("name=\"");
-                    int nameEnd = headers.indexOf("\"", namePos + 6);
-                    formFieldName = (namePos >= 0) ? headers.substring(namePos + 6, nameEnd) : "";
-
-                    int fnPos = headers.indexOf("filename=\"");
-                    if (fnPos >= 0) {
-                        int fnEnd = headers.indexOf("\"", fnPos + 10);
-                        curFilename = headers.substring(fnPos + 10, fnEnd);
-                        // Brug den senest modtagne path (fra path-felt), ellers root
-                        String fullpath = lastUploadPath;
-                        if (!fullpath.endsWith("/")) fullpath += "/";
-                        fullpath += curFilename;
-                        ensureDirs(fullpath);
-
-                        curFile = sd.open(fullpath.c_str(), O_WRITE | O_CREAT | O_TRUNC);
-                        if (!curFile) {
-                            Serial.print("Kunne ikke åbne fil: "); Serial.println(fullpath);
-                        } else {
-                            Serial.print("Uploader til: "); Serial.println(fullpath);
-                        }
-                        fileBytesWritten = 0;
-                        anyFile = true;
-                        isPathField = false;
-                        state = READ_DATA;
-                    } else if (formFieldName == "path") {
-                        // path-felt (uden filename)
-                        isPathField = true;
-                        curFilename = "";
-                        state = READ_DATA;
+    auto ensureDirs = [](const String& fullpath) {
+        int lastSlash = fullpath.lastIndexOf('/');
+        if (lastSlash <= 0) return;
+        String dir = fullpath.substring(0, lastSlash);
+        String build = "";
+        for (size_t i = 1; i < dir.length(); ++i) {
+            if (dir[i] == '/' || i == dir.length() - 1) {
+                size_t end = (i == dir.length() - 1) ? i + 1 : i;
+                build = dir.substring(0, end);
+                if (!sd.exists(build.c_str())) {
+                    if (!sd.mkdir(build.c_str())) {
+                        Serial.print("Kunne ikke oprette mappe: "); Serial.println(build);
                     } else {
-                        // Andet felt, spring til næste boundary
-                        state = WAIT_BOUNDARY;
+                        Serial.print("Oprettet mappe: "); Serial.println(build);
                     }
-                    buffer.erase(buffer.begin(), buffer.begin() + bufPos);
-                    bufPos = 0;
+                }
+            }
+        }
+    };
+
+    auto findBoundary = [&](const std::vector<uint8_t>& buf, const String& b, size_t start=0) -> int {
+        if (b.length() == 0 || buf.size() < b.length()) return -1;
+        for (size_t i = start; i <= buf.size() - b.length(); ++i) {
+            bool match = true;
+            for (size_t j = 0; j < b.length(); ++j) {
+                if (buf[i + j] != (uint8_t)b[j]) { match = false; break; }
+            }
+            if (match) return i;
+        }
+        return -1;
+    };
+
+    auto findCRLF = [](const std::vector<uint8_t>& buf, size_t start) -> int {
+        for (size_t i = start; i + 1 < buf.size(); ++i) {
+            if (buf[i] == 13 && buf[i+1] == 10) return i;
+        }
+        return -1;
+    };
+
+    bool done = false, anyFile = false;
+
+    while (!done && totalBytesRead < totalBytesToRead) {
+        if (buffer.size() < BUFSIZE && totalBytesRead < totalBytesToRead) {
+            uint8_t tmp[BUFSIZE];
+            int n = client.read(tmp, BUFSIZE);
+            if (n > 0) {
+                buffer.insert(buffer.end(), tmp, tmp + n);
+                totalBytesRead += n;
+            } else {
+                delay(1);
+            }
+        }
+
+        switch (state) {
+            case WAIT_BOUNDARY: {
+                int bstart = findBoundary(buffer, boundary, 0);
+                if (bstart < 0) {
+                    if (buffer.size() > boundary.length())
+                        buffer.erase(buffer.begin(), buffer.end() - boundary.length());
                     break;
                 }
-                case READ_DATA: {
-                    int boundaryIdx = findBoundary(buffer, boundary, bufPos);
-                    if (boundaryIdx < 0) {
-                        // Skriv alt undtagen sidste boundary.length bytes
-                        size_t toWrite = (buffer.size() > boundary.length()) ? buffer.size() - boundary.length() : 0;
-                        if (!isPathField && curFile && toWrite > 0) {
+                bufPos = bstart + boundary.length();
+                if (bufPos + 2 <= buffer.size() && buffer[bufPos] == 13 && buffer[bufPos+1] == 10) bufPos += 2;
+                if (bufPos + 2 <= buffer.size() && buffer[bufPos] == '-' && buffer[bufPos+1] == '-') {
+                    done = true;
+                    break;
+                }
+                state = READ_HEADERS;
+                buffer.erase(buffer.begin(), buffer.begin() + bufPos);
+                bufPos = 0;
+                break;
+            }
+            case READ_HEADERS: {
+                String headers = "";
+                while (true) {
+                    int crlf = findCRLF(buffer, bufPos);
+                    if (crlf < 0) break;
+                    if (crlf == (int)bufPos) {
+                        bufPos += 2;
+                        break;
+                    }
+                    String line((char*)&buffer[bufPos], crlf-bufPos);
+                    headers += line + "\n";
+                    bufPos = crlf + 2;
+                }
+                if (bufPos == 0 || (bufPos > buffer.size())) break;
+
+                int namePos = headers.indexOf("name=\"");
+                int nameEnd = headers.indexOf("\"", namePos + 6);
+                formFieldName = (namePos >= 0) ? headers.substring(namePos + 6, nameEnd) : "";
+
+                int fnPos = headers.indexOf("filename=\"");
+                if (fnPos >= 0) {
+                    int fnEnd = headers.indexOf("\"", fnPos + 10);
+                    curFilename = headers.substring(fnPos + 10, fnEnd);
+                    String fullpath = lastUploadPath;
+                    if (!fullpath.endsWith("/")) fullpath += "/";
+                    fullpath += curFilename;
+                    ensureDirs(fullpath);
+
+                    curFile = sd.open(fullpath.c_str(), O_WRITE | O_CREAT | O_TRUNC);
+                    if (!curFile) {
+                        Serial.print("Kunne ikke åbne fil: "); Serial.println(fullpath);
+                    } else {
+                        Serial.print("Uploader til: "); Serial.println(fullpath);
+                    }
+                    fileBytesWritten = 0;
+                    anyFile = true;
+                    isPathField = false;
+                    state = READ_DATA;
+                } else if (formFieldName == "path") {
+                    isPathField = true;
+                    curFilename = "";
+                    state = READ_DATA;
+                } else {
+                    state = WAIT_BOUNDARY;
+                }
+                buffer.erase(buffer.begin(), buffer.begin() + bufPos);
+                bufPos = 0;
+                break;
+            }
+            case READ_DATA: {
+                int boundaryIdx = findBoundary(buffer, boundary, bufPos);
+                if (boundaryIdx < 0) {
+                    size_t toWrite = (buffer.size() > boundary.length()) ? buffer.size() - boundary.length() : 0;
+                    if (!isPathField && curFile && toWrite > 0) {
+                        curFile.write(&buffer[bufPos], toWrite);
+                        fileBytesWritten += toWrite;
+                        buffer.erase(buffer.begin(), buffer.begin() + toWrite);
+                    }
+                    break;
+                } else {
+                    if (isPathField) {
+                        size_t len = boundaryIdx;
+                        if (len >= 2 && buffer[boundaryIdx-2]==13 && buffer[boundaryIdx-1]==10) len -= 2;
+                        String pathStr((char*)&buffer[bufPos], len);
+                        pathStr.trim();
+                        if (!pathStr.startsWith("/")) pathStr = "/" + pathStr;
+                        lastUploadPath = pathStr;
+                        Serial.print("Sæt upload-sti til: "); Serial.println(pathStr);
+                    } else if (curFile) {
+                        size_t toWrite = boundaryIdx;
+                        if (toWrite >= 2 && buffer[boundaryIdx-2]==13 && buffer[boundaryIdx-1]==10) toWrite -= 2;
+                        if (toWrite > 0) {
                             curFile.write(&buffer[bufPos], toWrite);
                             fileBytesWritten += toWrite;
-                            buffer.erase(buffer.begin(), buffer.begin() + toWrite);
                         }
-                        break;
-                    } else {
-                        if (isPathField) {
-                            // Udtræk path - alt op til boundary (minus evt. foranstillede \r\n)
-                            size_t len = boundaryIdx;
-                            // Fjern evt. \r\n før boundary
-                            if (len >= 2 && buffer[boundaryIdx-2]==13 && buffer[boundaryIdx-1]==10) len -= 2;
-                            String pathStr((char*)&buffer[bufPos], len);
-                            pathStr.trim();
-                            if (!pathStr.startsWith("/")) pathStr = "/" + pathStr;
-                            lastUploadPath = pathStr;
-                            Serial.print("Sæt upload-sti til: "); Serial.println(pathStr);
-                        } else if (curFile) {
-                            // Skriv fil-data op til boundary (minus evt. foranstillede \r\n)
-                            size_t toWrite = boundaryIdx;
-                            if (toWrite >= 2 && buffer[boundaryIdx-2]==13 && buffer[boundaryIdx-1]==10) toWrite -= 2;
-                            if (toWrite > 0) {
-                                curFile.write(&buffer[bufPos], toWrite);
-                                fileBytesWritten += toWrite;
-                            }
-                            Serial.print("Fil afsluttet, bytes skrevet: "); Serial.println(fileBytesWritten);
-                            curFile.close();
-                        }
-                        curFile = FsFile();
-                        isPathField = false;
-                        state = WAIT_BOUNDARY;
-                        // Fjern alt op til boundary (inkl. boundary)
-                        buffer.erase(buffer.begin(), buffer.begin() + boundaryIdx + boundary.length());
-                        bufPos = 0;
+                        Serial.print("Fil afsluttet, bytes skrevet: "); Serial.println(fileBytesWritten);
+                        curFile.close();
                     }
-                    break;
+                    curFile = FsFile();
+                    isPathField = false;
+                    state = WAIT_BOUNDARY;
+                    buffer.erase(buffer.begin(), buffer.begin() + boundaryIdx + boundary.length());
+                    bufPos = 0;
                 }
+                break;
             }
-        } // while
-
-        // Luk evt. åben fil
-        if (curFile && curFile.isOpen()) curFile.close();
-
-        // Svar til client
-        if (anyFile) {
-            client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nUpload OK");
-            Serial.println("Upload færdig");
-        } else {
-            client.println("HTTP/1.1 400 Bad Request\r\n\r\nNo files uploaded");
-            Serial.println("Ingen filer fundet i upload");
         }
     }
 
- };
+    if (curFile && curFile.isOpen()) curFile.close();
+
+    if (anyFile) {
+        client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nUpload OK");
+        Serial.println("Upload færdig");
+    } else {
+        client.println("HTTP/1.1 400 Bad Request\r\n\r\nNo files uploaded");
+        Serial.println("Ingen filer fundet i upload");
+    }
+}
+
+};

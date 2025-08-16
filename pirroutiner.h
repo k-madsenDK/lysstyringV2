@@ -43,18 +43,21 @@ class pirroutiner {
     void initInputs(void)
     {
       if(pir1ben >=0 && pir1ben < 29){
-        pinMode(pir1ben, INPUT);
-        digitalWrite(pir1ben, HIGH);
+        pinMode(pir1ben, INPUT_PULLUP);
+        //pinMode(pir1ben, INPUT);
+        //digitalWrite(pir1ben, HIGH);
         pir1_tilstede = true;
       }
       if(pir2ben >=0 && pir2ben < 29){
-        pinMode(pir2ben, INPUT);
-        digitalWrite(pir2ben, HIGH);
+        pinMode(pir2ben, INPUT_PULLUP);
+        //pinMode(pir2ben, INPUT);
+        //digitalWrite(pir2ben, HIGH);
         pir2_tilstede = true;
       }
       if(hwswben >=0 && hwswben < 29){
-        pinMode(hwswben, INPUT);
-        digitalWrite(hwswben, HIGH);
+        pinMode(hwswben, INPUT_PULLUP);
+        //pinMode(hwswben, INPUT);
+        //digitalWrite(hwswben, HIGH);
         hwsw_tilstede = true;
       }
     }
@@ -129,13 +132,13 @@ class pirroutiner {
     }
   }
 
-      if(hwsw_tilstede) {
-        if(digitalRead(hwswben) == LOW) { // Kontakt trykket = aktivering!
-        hwsw_count++;
-        if(hwsw_count >= 2 && !hwsw_aktiveret) {
-          hwsw_aktiveret = true;
-          mutex_enter_blocking(&param_mutex);
-          if(param.logpirdetection) rp2040.fifo.push_nb(hwsw_on); //log hvis valgt
+  if(hwsw_tilstede) {
+    if(digitalRead(hwswben) == LOW) { // Kontakt trykket = aktivering!
+      hwsw_count++;
+      if(hwsw_count >= 2 && !hwsw_aktiveret) {
+        hwsw_aktiveret = true;
+        mutex_enter_blocking(&param_mutex);
+        if(param.logpirdetection) rp2040.fifo.push_nb(hwsw_on); //log hvis valgt
           mutex_exit(&param_mutex);
           mutex_enter_blocking(&pir_mutex);
           *hwsw_tid = tidSomStrengFraRTC();
@@ -143,11 +146,23 @@ class pirroutiner {
           }
         } else {
         hwsw_count = 0;
+        hwsw_aktiveret = false;
         }
       hwsw_aktiv = (digitalRead(hwswben) == LOW);
       }
   }
 
+    // Log hardware switch OFF (kald ved overgang aktiv -> inaktiv)
+   void logHWSWOff() {
+        // Kun log hvis funktionen er ønsket og vi HAR haft den aktiv
+        if(param.logpirdetection) {
+            rp2040.fifo.push_nb(hwsw_off);
+        }
+        // Opdater tidsstempel
+        mutex_enter_blocking(&pir_mutex);
+        *hwsw_tid = tidSomStrengFraRTC();
+        mutex_exit(&pir_mutex);
+    }
     // ------ Public getters for PIR og HW ------
     bool isPIR1Activated() {
       bool wasActivated = pir1_aktiveret;
