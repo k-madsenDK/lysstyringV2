@@ -1,0 +1,40 @@
+pico ben1 til pwmmodul pwm
+fælles stel til pwmmodul gnd
+fælles 3.3v til pwmmodul vcc
+
+pico ben 36 til fælles 3.3v
+pico ben 38 til fælles stel
+
+pico ben5 til en 2.2k ohms modstand der er lodet på basis på en bc547b 
+collector til relay spole A2 - side emitter er fælles stel
+relay spole A1 er sat til psu 24v 
+
+pico ben 6 til BH1750 SDA pin 4
+pico ben 7 til BH1750 SCL pin 3
+
+pico ben 14 til bmp280 SDA pin 4
+pico ben 15 til bmp280 SCL pin 3
+
+Der er 3 pullup modtande på pico ben 17 19 20 10kohm anden side til fælles 3.3v
+pico ben 17 sættes et 220v relay over således at pin 17 trækkes lav ved aktivering
+	relay 1 pico fælles stel
+	relay 2 pico ben 17
+
+pico ben 19 og 20
+	pirdetector relay ø3 til pico 19
+	pirdetector relay ø4 til pico fælles stel
+	pirdetector2 relay ø3 til pico 20
+	pirdetector2 relay ø4 til pico fælles stel
+
+pico ben 21 til 25 -23 er spi interface til sdcard reader 3.3 v
+pico ben 26 CS til sdcard reader
+tæt på pico ben 36 sættes en 22uf electrolyt condensator 63v og til fælles stel pin 38
+
+fra psu 24v sættes stel til pico stel
+en standart nedskaler konverter som sættes til 4.6 v output  24v ind fra psu
+output går gennem en 1n5819 A8 diode ring væk fra converter ring siden af dioden sættes til
+pico pin 39 VSYS
+alle digital moduler forsynes fra pico fælles 3.3v
+alle digital moduler sættes på pico fælles stel
+tæt ved alle moduler lodes 10 uf electrolyt og en 1nf ceramisk kondensator mellem vcc og gnd
+
