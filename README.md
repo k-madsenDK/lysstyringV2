@@ -51,6 +51,7 @@ Status: Stabil i drift med webinterface, SD-log, NTP-ur og konfiguration via SD/
 - PIR‑sensorer (2x) + hardware‑kontakt (valgfri)
 - AC‑dimmer (Krida Electronics 8A) + relæ
 - Solid PSU på VSYS anbefales; gerne ekstra bulk‑kondensator tæt på VSYS
+- 2 stk 24v pir detectorer niko 41-549.
 
 ## Endpoints (web)
 
