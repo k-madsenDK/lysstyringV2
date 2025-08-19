@@ -1,0 +1,7 @@
+Cyw43Power    KEYWORD1
+setPowerMode  KEYWORD2
+getRSSI       KEYWORD2
+linkStatus    KEYWORD2
+Default       LITERAL1
+NoSave        LITERAL1
+Performance   LITERAL1
