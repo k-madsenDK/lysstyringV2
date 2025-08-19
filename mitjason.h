@@ -15,7 +15,7 @@ class MitJsonWiFi {
 public:
     const char* default_ssid = "MySSid";
     const char* default_password = "myPass";
-    const char* default_kontrollernavn = "controller";
+    const char* default_kontrollernavn = "kontroller";
 
     char ssid[33];
     char password[65];

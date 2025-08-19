@@ -24,6 +24,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include "hardware/watchdog.h"  // til at logge watchdog-reset i core0
+#include "Cyw43Power.h"
 
 // -------------------- SD-kort pins --------------------
 #define SD_MISO 16
@@ -181,7 +182,7 @@ void fifoTimerCallback() {
 // -------------------- NTP init + første sync --------------------
 bool setupWiFiAndNTP() {
     Serial.println("Forbinder til WiFi...");
-    WiFi.setHostname("lyscontrol");
+    WiFi.setHostname(mitjason->default_kontrollernavn);
     WiFi.begin(mitjason->ssid, mitjason->password);
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 30) {
@@ -193,6 +194,13 @@ bool setupWiFiAndNTP() {
         Serial.println("\nKunne ikke forbinde til WiFi!");
         return false;
     }
+    bool pwrOK = Cyw43Power::setPowerMode(Cyw43Power::NoSave);
+    Serial.print("WiFi power mode (NoSave): ");
+    Serial.println(pwrOK ? "OK" : "UNAVAILABLE");
+    int8_t outDbm;
+    Cyw43Power::getRSSI(outDbm);
+    Serial.print("Rssi = ");
+    Serial.println(outDbm);
     Serial.println("\nTilsluttet!");
     Serial.print("IP adresse: ");
     Serial.println(WiFi.localIP());
@@ -300,7 +308,7 @@ void checkforlog(){
 // -------------------- WiFi reconnect --------------------
 int connectwifi(void){
   WiFi.disconnect();
-  WiFi.setHostname("lyscontrol");
+  WiFi.setHostname(mitjason->default_kontrollernavn);
   return WiFi.begin(mitjason->ssid, mitjason->password);
 }
 
@@ -371,8 +379,13 @@ void loop() {
     if(WiFi.status() != WL_CONNECTED){
         int status = connectwifi();
         if(status == WL_CONNECTED){
-            Serial.println("[WiFi] Reconnected");
-            if (lyslog) lyslog->logHardware(String("WIFI_RECONNECT ") + WiFi.localIP().toString());
+          Cyw43Power::setPowerMode(Cyw43Power::NoSave);
+          Serial.println("[WiFi] Reconnected");
+          if (lyslog) lyslog->logHardware(String("WIFI_RECONNECT ") + WiFi.localIP().toString());
+          int8_t outDbm;
+          Cyw43Power::getRSSI(outDbm);
+          Serial.print("Rssi = ");
+          Serial.println(outDbm);
         }
     }
 
@@ -380,7 +393,7 @@ void loop() {
     wifiKeepAlive(); // hold association i live når der ikke er UI-trafik
 
     // Webserver
-    WiFiClient client = server.available();
+    WiFiClient client = server.accept();
     if (client) {
         String req = "";
         unsigned long timeout = millis() + 2000;

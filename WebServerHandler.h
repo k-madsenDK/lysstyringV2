@@ -17,6 +17,7 @@
 #include "mitjason.h"
 #include <SdFat.h>
 #include "lyslog.h"          // Direkte logging på core0
+#include "Cyw43Power.h"
 
 // Eksterne variabler fra main/core1, mutexbeskyttelse påkrævet hvis der skrives/ændres!
 extern mutex_t lys_mutex;
@@ -186,6 +187,7 @@ void sendIndex(WiFiClient& client) {
         "</style>"
         "</head><body>"
         "<h1>Kontrol panel</h1><br>"
+        "<div id=\"tiden\" style=\"text-align:center;font-size:1.3em;margin-bottom:6px;\"></div>"
         "<h2>Lys on / Soft off</h2>"
         "<p>"
         "<button class=\"button buttonon\" title=\"Sætter systemet i låst ON samme funktion som en fysisk kontakt\n Systemet returnere f&oslash;rst til automode ved brug af Softoff\" id=\"onBtn\">ON</button>"
@@ -280,6 +282,18 @@ void sendIndex(WiFiClient& client) {
         "  }"
         "  opdaterStatus();"
         "  setInterval(opdaterStatus, 5000);"
+        "function opdaterTid() {"
+        "  var nu = new Date();"
+        "  var hh = String(nu.getHours()).padStart(2,'0');"
+        "  var mm = String(nu.getMinutes()).padStart(2,'0');"
+        "  var ss = String(nu.getSeconds()).padStart(2,'0');"
+        "  var dag = String(nu.getDate()).padStart(2,'0');"
+        "  var mdr = String(nu.getMonth()+1).padStart(2,'0');"
+        "  var aar = nu.getFullYear();"
+        "  document.getElementById('tiden').innerText = hh + '.' + mm + '.' + ss + ' ' + dag + '-' + mdr + '-' + aar;"
+        "}"
+        "setInterval(opdaterTid, 1000);"
+        "opdaterTid();"
         "});"
         "</script>"
         "</body></html>"
@@ -302,6 +316,13 @@ void sendIndex(WiFiClient& client) {
         client.print("Sidste pir 1 aktivering = ");  client.println(*pir1_tid);
         client.print("Sidste pir 2 aktivering = ");  client.println(*pir2_tid);
         client.print("Sidste Kontakt aktivering = ");  client.println(*hwsw_tid);
+    // NYT: RSSI
+        {
+          int8_t rssiDbm;
+          if (Cyw43Power::getRSSI(rssiDbm)) {
+            client.print("rssi="); client.println(rssiDbm);
+          }
+        }
         mutex_exit(&pir_mutex);
   }
 
@@ -512,6 +533,9 @@ void sendStatusJSON(WiFiClient& client) {
     doc["Hpa"] = aktuelpress;
     doc["Cputemp"] = internaltemp;
     doc["lys_on"] = lys_permanet_on;
+    int8_t rssiDbm;
+    if (Cyw43Power::getRSSI(rssiDbm)) {
+      doc["rssi"] = rssiDbm; }
     mutex_exit(&lys_mutex);
 
     // Beskyt PIR/HWSW-tider
