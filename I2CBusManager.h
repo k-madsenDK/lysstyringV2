@@ -6,6 +6,9 @@
 #define I2C_MANAGER_MAX_RETRIES 3
 #endif
 
+// NB: Denne manager er kun til standardbussen Wire.
+// I dit nuværende projekt bruger du den ikke aktivt, men filen er her hvis du senere
+// vil styre Wire (BH1750+BMP280) med auto-slow-mode.
 class I2CBusManager {
 public:
     I2CBusManager(int sdaPin, int sclPin)
@@ -16,7 +19,6 @@ public:
         _slow = slowHz;
     }
 
-    // Kald én gang i setup1
     bool init(bool scan = true) {
         if (!recoverBus()) {
             Serial.println(F("[I2C] Bus kunne ikke frigives (SDA lav)"));
@@ -30,7 +32,6 @@ public:
         return true;
     }
 
-    // Brug ved sensorfejl; returnerer nuværende clock-mode
     uint32_t registerFailure() {
         _failCount++;
         if (_failCount >= I2C_MANAGER_MAX_RETRIES && !_slowMode) {
@@ -38,12 +39,11 @@ public:
             _slowMode = true;
             applyClock();
         }
-        return WireGetCurrentClock();
+        return getCurrentClock();
     }
 
     void registerSuccess() {
         if (_failCount > 0) _failCount--;
-        // (Valgfrit) automatisk tilbage til fast efter lang tids succes
         if (_slowMode && _failCount == 0 && _successStreak++ > 50) {
             Serial.println(F("[I2C] Stabil igen – tilbage til fast mode"));
             _slowMode = false;
@@ -95,8 +95,7 @@ private:
         Serial.println(F(" kHz"));
     }
 
-    // Philhower Wire har ingen getter; vi holder bare state selv
-    uint32_t WireGetCurrentClock() const {
+    uint32_t getCurrentClock() const {
         return _slowMode ? _slow : _fast;
     }
 };

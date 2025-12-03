@@ -428,7 +428,9 @@ void loop() {
 
 // Sensor / runtime variabler
 hp_BH1750 *lightMeter = new hp_BH1750;
+// BMP280 på Wire1 (egen bus)
 Adafruit_BMP280 *bmp = new Adafruit_BMP280(&Wire1);
+
 bool   timer_tik  = false;
 float  last_lux = 0.0;
 float  last_temp = 0.0;
@@ -477,19 +479,25 @@ void setup1() {
         delay(100);
     }
 
+    // Recovery for I2C-bus (Wire) på GP5=SCL, GP4=SDA
     I2CBusRecover::recover(5,4);
-    I2CBusRecover::recover(10,11);
+
+    // BH1750 på Wire (4/5)
     Wire.setSDA(4);
     Wire.setSCL(5);
     Wire.begin();
-    Wire.setClock(100000);     // BH1750 bus
+    Wire.setClock(100000);     // 100 kHz
+
+    // Recovery for I2C-bus (Wire1) på GP11=SCL, GP10=SDA
+    I2CBusRecover::recover(11,10);
+    // BMP280 på Wire1 (10/11)
     Wire1.setSDA(10);
     Wire1.setSCL(11);
     Wire1.begin();
-    Wire1.setClock(1000000);   // BMP280 bus
+    Wire1.setClock(100000);    // 100 kHz til 1 m kabel
 
     pinMode(LED_BUILTIN, OUTPUT);
-
+    
     myTimer.setInterval(1000, blink);
     softlysTimer.setInterval(250, softlysIrq);
 
@@ -503,11 +511,12 @@ void setup1() {
         Serial.println("BH1750 ikke fundet på I2C-bussen!");
     }
 
-    Serial.println("Tester BMP280 sensor...");
+    Serial.println("Tester BMP280 sensor (adr 0x76)...");
     if (!bmp->begin(0x76)) {
-        Serial.println("BMP280 ikke fundet på I2C-bussen!");
+        Serial.println("BMP280 ikke fundet på I2C-bussen på 0x76!");
     } else {
         BMP280_tilstede = true;
+        Serial.println("BMP280 fundet på I2C-bussen på 0x76!");
         Serial.print("Temperatur: "); Serial.print(bmp->readTemperature()); Serial.println(" *C");
         Serial.print("Lufttryk: ");  Serial.print(bmp->readPressure() / 100.0F); Serial.println(" hPa");
     }
