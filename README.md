@@ -1,7 +1,7 @@
 # lysstyringV2
 Efter at have testet systemet i 1 måned er der fundet følgende fejl.
 1 i2c Bussen læser sommetider forkert på grund af fugt (faldende temperature) og weside viser CPU temp når der er - grader uden for.
-Jeg arbejder på en opdatering som OGSÅ inkludere et atromisk ur samt en ændrig af løs lys sensor så det tager samme tid at komme ud af nat aktiv som det tager at komme ind i nataktiv.
+Jeg arbejder på en opdatering som OGSÅ inkludere et atromisk ur samt en ændrig af lys sensor, så det tager samme tid at komme ud af nat aktiv, som det tager at komme ind i nataktiv.
 Når det nye system er gennem testet vil jeg opdatere denne repos.
 Lysstyring til mit hus (Raspberry Pi Pico W / RP2040 + Earl Philhower Arduino core). Projektet kører dual-core: Core0 håndterer WiFi/NTP/SD/web, Core1 håndterer sensorer, automatik og dimmer.
 
