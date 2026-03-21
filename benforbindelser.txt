@@ -9,11 +9,11 @@ pico ben5 til en 2.2k ohms modstand der er lodet på basis på en bc547b
 collector til relay spole A2 - side emitter er fælles stel
 relay spole A1 er sat til psu 24v 
 
-pico ben 6 til BH1750 SDA pin 4
-pico ben 7 til BH1750 SCL pin 3
+pico ben 6 til VEML7700 SDA (Wire I2C0) gpio 4
+pico ben 7 til VEML7700 SCL (Wire I2C0) gpio 5
 
-pico ben 14 til bmp280 SDA pin 4
-pico ben 15 til bmp280 SCL pin 3
+pico ben 14 til bmp280 SDA (Wire1 I2C1) gpio 10
+pico ben 15 til bmp280 SCL (Wire1 I2C1) gpio 11
 
 Der er 3 pullup modtande på pico ben 17 19 20 10kohm anden side til fælles 3.3v
 pico ben 17 sættes et 220v relay over således at pin 17 trækkes lav ved aktivering
@@ -36,5 +36,10 @@ output går gennem en 1n5819 A8 diode ring væk fra converter ring siden af diod
 pico pin 39 VSYS
 alle digital moduler forsynes fra pico fælles 3.3v
 alle digital moduler sættes på pico fælles stel
-tæt ved alle moduler lodes 10 uf electrolyt og en 1nf ceramisk kondensator mellem vcc og gnd
+tæt ved alle moduler lodes 10 uf electrolyt og en 100nf ceramisk kondensator mellem vcc og gnd
 
+VEML7700 lyssensor (2m kabel):
+	10 uf afkobling i pico-enden
+	100 nf keramisk afkobling i sensor-enden
+	plastik 70 korrosionsbeskyttelse på breakout board
+	
