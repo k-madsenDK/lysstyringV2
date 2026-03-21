@@ -1,40 +1,46 @@
+#pragma once
 /**
  * @file lyslog.h
  * @brief SD-logning af nataktivitet, PIR-events og hardware-events.
  *
- * Bruges til at logge events til SD-kortet.
+ * Tre logfiler:
+ *   /nataktiv.log  – nat/dag overgange (styret af lognataktiv flag).
+ *   /pir.log       – PIR/HW/SW events (styret af logpirdetection flag).
+ *   /hardware.log  – watchdog, I2C-resets, WiFi, astro-data (ALTID aktiv).
+ *
+ * Alle entries tidsstemples via RTC.
  */
-#pragma once
 
-#include <Arduino.h>
 #include <SdFat.h>
+#include <Arduino.h>
 #include "hardware/rtc.h"
 
-#define NATLOG_FILENAME "/nataktiv.log"
-#define PIRLOG_FILENAME "/pir.log"
-#define HARDWARELOG_FILENAME "/hardware.log"  // altid aktiv hvis SD er til stede
+#define NATLOG_FILENAME      "/nataktiv.log"
+#define PIRLOG_FILENAME      "/pir.log"
+#define HARDWARELOG_FILENAME  "/hardware.log"
 
 class LysLog {
 public:
     LysLog(SdFat &sd, bool natLogEnabled = true, bool pirLogEnabled = true)
         : sd(sd), natLogEnabled(natLogEnabled), pirLogEnabled(pirLogEnabled) {}
 
-    // Nat-aktivitet (respekterer natLogEnabled)
+    /** Log nat/dag overgang (respekterer natLogEnabled). */
     void logNatAktiv(bool aktiv) {
         if (!natLogEnabled) return;
         appendToFile(NATLOG_FILENAME, makeTimeLine("NAT_AKTIV_" + String(aktiv ? "ON" : "OFF")));
     }
 
-    // PIR (respekterer pirLogEnabled)
+    /** Log PIR/HW/SW event (respekterer pirLogEnabled). */
     void logPIR(const String& pirNavn) {
         if (!pirLogEnabled) return;
         appendToFile(PIRLOG_FILENAME, makeTimeLine(pirNavn + "_ACTIVATED"));
     }
 
-    // Hardware-log (ALTID, hvis SD er til stede)
+    /** Log hardware-event (ALTID aktiv). */
     void logHardware(const String& event) {
         appendToFile(HARDWARELOG_FILENAME, makeTimeLine(event));
     }
+
     void logWatchdogReset()                { logHardware("WATCHDOG_RESET"); }
     void logI2CReset(const char* bus)      { logHardware(String("I2C_RESET_") + bus); }
     void logWiFiReconnect(const String& ip){ logHardware(String("WIFI_RECONNECT ") + ip); }
@@ -48,6 +54,7 @@ private:
     bool natLogEnabled;
     bool pirLogEnabled;
 
+    /** Opret tidsstemplet log-linje. */
     String makeTimeLine(const String& event) {
         datetime_t t;
         rtc_get_datetime(&t);
@@ -57,8 +64,9 @@ private:
         return "[" + String(tidBuf) + "] " + event + "\n";
     }
 
+    /** Append linje til fil på SD-kort. */
     void appendToFile(const char *filename, const String& line) {
-        FsFile file = sd.open(filename, FILE_WRITE); // FILE_WRITE appender
+        FsFile file = sd.open(filename, FILE_WRITE);
         if (file) {
             file.seekEnd();
             file.print(line);

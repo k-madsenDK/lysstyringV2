@@ -1,7 +1,21 @@
 #pragma once
+/**
+ * @file LysAutomatik.h
+ * @brief State machine for lys-automatik med tre modes: Tid, Klokken og Astro.
+ *
+ * States: OFF → TIMER_A (grundlys) → TIMER_C (PIR 1. fase) → TIMER_E (PIR 2. fase) → NIGHT_GLOW.
+ *
+ * Tid-mode:     Fast varighed (timerA sekunder) efter nataktiv.
+ * Klokken-mode: Segment-baseret – lys ON fra nataktiv til slut-klokkeslæt + tillægssegmenter.
+ * Astro-mode:   Solnedgang/solopgang + offsets + lux fallback + tillægssegmenter.
+ *
+ * Segmenter (Klokken/Astro): seg1 (basis) + seg2/seg3 med individuel ugedag-maske.
+ *
+ * Kaldes 1 Hz fra core1 loop1().
+ */
 
 #include <Arduino.h>
-#include <time.h>
+#include <ctime>
 
 #include "AstroSun.h"
 #include "Dimmerfunktion.h"
@@ -23,31 +37,35 @@ private:
 
     bool nataktiv = false;
 
-    // Lux delay/hysterese (sekunder, fordi update() kaldes 1Hz i dit loop1)
+    // Lux nat/dag forsinkelse (tæller ned i sekunder, 1 Hz)
     long natdagdelayTimer = 0;
     long dagNatDelayTimer = 0;
     bool lastLuxOver = true;
 
-    // Astro cache (beregn 1 gang pr dato)
+    // Astro cache – beregnes én gang per dato
     int cachedY = -1, cachedM = -1, cachedD = -1;
     AstroTimes cachedAstro;
 
-    // Latch for "lux early-start" før solnedgang i Astro-mode
+    // Latch for lux early-start (før solnedgang i Astro-mode)
     bool astroEarlyLatched = false;
+
+    // ---- Hjælpefunktioner ----
 
     static int toSec(int h, int m, int s = 0) { return h * 3600 + m * 60 + s; }
     static int toMin(int h, int m) { return h * 60 + m; }
 
+    /** Check om nowSec er i [startSec, endSec) med midnat-wrap. */
     static bool inRangeSec(int nowSec, int startSec, int endSec) {
-        if (startSec == endSec) return true;            // “altid”
+        if (startSec == endSec) return true;
         if (startSec < endSec)  return (nowSec >= startSec && nowSec < endSec);
-        return (nowSec >= startSec || nowSec < endSec); // over midnat
+        return (nowSec >= startSec || nowSec < endSec);
     }
 
+    /** Check om nowMin er i [startMin, endMin) med midnat-wrap. */
     static bool inRangeMin(int nowMin, int startMin, int endMin) {
         if (startMin == endMin) return true;
         if (startMin < endMin)  return (nowMin >= startMin && nowMin < endMin);
-        return (nowMin >= startMin || nowMin < endMin); // over midnat
+        return (nowMin >= startMin || nowMin < endMin);
     }
 
     static int wrapMin(int m) {
@@ -57,10 +75,10 @@ private:
     }
 
     static bool toLocalTm(time_t t, tm& out) {
-        // localtime_r returnerer typisk &out (ikke nullptr) ved success
         return localtime_r(&t, &out) != nullptr;
     }
 
+    /** Opdater astro-cache hvis datoen er ændret. */
     void ensureAstroCached(time_t ntpTid) {
         tm ti;
         if (!toLocalTm(ntpTid, ti)) return;
@@ -75,8 +93,7 @@ private:
         }
     }
 
-    // Returnerer sunrise/sunset (minutter fra midnat) med offsets anvendt.
-    // Returnerer false hvis astro ikke kan beregnes.
+    /** Hent solopgang/solnedgang i minutter med offsets. */
     bool getAstroRiseSetMin(time_t ntpTid, int& sunriseMin, int& sunsetMin) {
         ensureAstroCached(ntpTid);
         if (!cachedAstro.valid()) return false;
@@ -90,6 +107,7 @@ private:
         return (param.styringsvalg == "Klokken" || param.styringsvalg == "Astro");
     }
 
+    /** Sæt nataktiv og log ændring via FIFO. */
     void setNataktiv(bool newVal) {
         if (nataktiv == newVal) return;
         nataktiv = newVal;
@@ -102,40 +120,41 @@ private:
         lastLuxOver = true;
     }
 
-    // "Nat-døgn" weekday: efter midnat hører til aftenen før (søndag = mandag morgen osv.)
+    /** Nat-ugedag: efter midnat tilhører aftenen før (for weekmask). */
     static int effectiveNightWday(int wday, int nowSec) {
         if (wday < 0 || wday > 6) return wday;
-        if (nowSec < toSec(12, 0, 0)) return (wday + 6) % 7; // før 12:00 => i går
+        if (nowSec < toSec(12, 0, 0)) return (wday + 6) % 7;
         return wday;
     }
 
-    // ---------- Segment beslutning (Klokken-mode / generisk) ----------
+    // ---- Segment-logik (Klokken-mode) ----
+
+    /** Bestem om TIMER_A skal være aktiv og hvornår det slutter. */
     bool klokWantAAndEnd(time_t ntpTid, int& outEndSec) {
         tm timeinfo;
         if (!toLocalTm(ntpTid, timeinfo)) {
-            // fail-open: behold lys som “nat” og sæt en “fornuftig” slut
             outEndSec = toSec(param.slutKlokkeTimer, param.slutKlokkeMinutter, 0);
             return true;
         }
 
         int nowSec = toSec(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        int wday = timeinfo.tm_wday;
 
-        int wday = timeinfo.tm_wday; // 0=Sun..6=Sat
         auto dayAllowed = [&](uint8_t mask) -> bool {
-            if (wday < 0 || wday > 6) return true; // fail-open
+            if (wday < 0 || wday > 6) return true;
             return (mask & (1u << wday)) != 0;
         };
 
         const int seg1End = toSec(param.slutKlokkeTimer, param.slutKlokkeMinutter, 0);
 
         bool wantA;
-        // Hvis seg1End < 12:00 => tolkes som "sluk næste dag om morgenen"
         if (seg1End < toSec(12, 0, 0)) {
             wantA = (nowSec >= toSec(12, 0, 0)) || (nowSec < seg1End);
         } else {
             wantA = (nowSec < seg1End);
         }
 
+        // Segment 2 override
         if (param.seg2Enabled && dayAllowed(param.seg2WeekMask)) {
             int s2Start = toSec(param.seg2StartTimer, param.seg2StartMinutter, 0);
             int s2End   = toSec(param.seg2SlutTimer,  param.seg2SlutMinutter,  0);
@@ -145,6 +164,7 @@ private:
             }
         }
 
+        // Segment 3 override
         if (param.seg3Enabled && dayAllowed(param.seg3WeekMask)) {
             int s3Start = toSec(param.seg3StartTimer, param.seg3StartMinutter, 0);
             int s3End   = toSec(param.seg3SlutTimer,  param.seg3SlutMinutter,  0);
@@ -158,28 +178,26 @@ private:
         return wantA;
     }
 
-    // ---------- Segment beslutning (Astro-mode) ----------
-    // Segment 1 i Astro = A fra sunset -> seg1End (fx 22:00), ellers G.
-    // Segment 2/3 kan override med deres intervaller. Weekmask tolkes som "nat-ugedag".
+    // ---- Segment-logik (Astro-mode) ----
+
+    /** Segment 1 i Astro = A fra sunset → seg1End. Seg2/3 override med weekmask. */
     bool astroWantAAndEnd(time_t ntpTid, int& outEndSec) {
         tm timeinfo;
         if (!toLocalTm(ntpTid, timeinfo)) {
             outEndSec = toSec(param.slutKlokkeTimer, param.slutKlokkeMinutter, 0);
-            return true; // fail-open
+            return true;
         }
 
         int nowSec = toSec(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-
-        // Weekmask: nat-logik
         int wdayEff = effectiveNightWday(timeinfo.tm_wday, nowSec);
+
         auto dayAllowed = [&](uint8_t mask) -> bool {
-            if (wdayEff < 0 || wdayEff > 6) return true; // fail-open
+            if (wdayEff < 0 || wdayEff > 6) return true;
             return (mask & (1u << wdayEff)) != 0;
         };
 
         int sunriseMin = 0, sunsetMin = 0;
         if (!getAstroRiseSetMin(ntpTid, sunriseMin, sunsetMin)) {
-            // Hvis astro fejler, fald tilbage til Klokken-logik
             return klokWantAAndEnd(ntpTid, outEndSec);
         }
 
@@ -210,11 +228,13 @@ private:
         return wantA;
     }
 
+    /** Router til korrekt segment-funktion baseret på mode. */
     bool segmentWantAAndEnd(time_t ntpTid, int& outEndSec) {
         if (param.styringsvalg == "Astro") return astroWantAAndEnd(ntpTid, outEndSec);
         return klokWantAAndEnd(ntpTid, outEndSec);
     }
 
+    /** Beregn resterende TIMER_A tid baseret på segment slut-tidspunkt. */
     void setTimerAToEnd(time_t ntpTid, int endSec) {
         tm timeinfo;
         if (!toLocalTm(ntpTid, timeinfo)) return;
@@ -223,11 +243,13 @@ private:
 
         timerA = endSec - nowSec;
         if (timerA < 0) timerA += 24L * 3600L;
-        if (timerA > 12L * 3600L) timerA = 0;   // <-- safety clamp
+        if (timerA > 12L * 3600L) timerA = 0;
         if (timerA < 0) timerA = 0;
     }
 
-    // ---------- Lux nat/dag (original) ----------
+    // ---- Lux nat/dag (fælles for Tid og Klokken) ----
+
+    /** Opdater nataktiv baseret på lux med hysterese og forsinkelse. */
     void updateLuxNat(float lux) {
         if (!nataktiv) {
             dagNatDelayTimer = 0;
@@ -265,11 +287,12 @@ private:
         }
     }
 
-    // ---------- Astro-mode (Valg A) ----------
+    // ---- Astro nat/dag ----
+
+    /** Astro-mode: nataktiv styres af solnedgang/solopgang med lux fallback. */
     void updateAstroMode(float lux, time_t ntpTid) {
         int sunriseMin = 0, sunsetMin = 0;
         if (!getAstroRiseSetMin(ntpTid, sunriseMin, sunsetMin)) {
-            // Fail-safe: hvis astro ikke kan beregnes, brug lux-mode
             astroEarlyLatched = false;
             updateLuxNat(lux);
             return;
@@ -280,11 +303,11 @@ private:
 
         int nowMin = toMin(ti.tm_hour, ti.tm_min);
 
-        bool astroNight = inRangeMin(nowMin, sunsetMin, sunriseMin); // sunset->sunrise
-        bool astroDay   = inRangeMin(nowMin, sunriseMin, sunsetMin); // sunrise->sunset
+        bool astroNight = inRangeMin(nowMin, sunsetMin, sunriseMin);
+        bool astroDay   = inRangeMin(nowMin, sunriseMin, sunsetMin);
 
         if (astroNight) {
-            // Rigtig nat: nataktiv = true (lux må ikke slukke om natten i Astro-mode)
+            // Astronomisk nat: altid nataktiv
             astroEarlyLatched = false;
             setNataktiv(true);
             resetLuxTimers();
@@ -292,13 +315,13 @@ private:
         }
 
         if (astroDay) {
-            // Astro-dag: lux fallback må tænde/slukke (A)
+            // Astronomisk dag: lux-baseret nat/dag
             astroEarlyLatched = false;
             updateLuxNat(lux);
             return;
         }
 
-        // "Dusk"/edge case (pga wrap/offset): ikke nat og ikke dag.
+        // Edge case (pga wrap/offset)
         if (astroEarlyLatched) {
             setNataktiv(true);
             resetLuxTimers();
@@ -311,7 +334,7 @@ private:
             return;
         }
 
-        // Lux early-start (kun tænd)
+        // Lux early-start: lux kan tænde nat før beregnet solnedgang
         if (!nataktiv) {
             if (lux < param.luxstartvaerdi && lastLuxOver) {
                 natdagdelayTimer = param.natdagdelay;
@@ -335,16 +358,19 @@ private:
 public:
     LysAutomatik(LysParam& p, dimmerfunktion* d) : param(p), dimmer(d) {}
 
-public:
+    /**
+     * @brief Boot-init: fastlæg nataktiv og output straks ud fra tid + lux.
+     * @param lux Aktuel lux-aflæsning.
+     * @param ntpTid UTC epoch.
+     */
     void initFromNow(float lux, time_t ntpTid) {
-        // Nulstil intern state
         currentState = OFF;
         slukActiveret = false;
         timerA = timerC = timerE = 0;
         astroEarlyLatched = false;
         resetLuxTimers();
 
-        // 1) Fastlæg nataktiv "instant"
+        // Fastlæg nataktiv instant
         if (param.styringsvalg == "Astro" && param.astroEnabled) {
             int sunriseMin = 0, sunsetMin = 0;
             if (getAstroRiseSetMin(ntpTid, sunriseMin, sunsetMin)) {
@@ -352,13 +378,9 @@ public:
                 if (toLocalTm(ntpTid, ti)) {
                     int nowMin = toMin(ti.tm_hour, ti.tm_min);
                     bool astroNight = inRangeMin(nowMin, sunsetMin, sunriseMin);
-                    bool astroDay   = inRangeMin(nowMin, sunriseMin, sunsetMin);
 
                     if (astroNight) {
                         setNataktiv(true);
-                    } else if (astroDay) {
-                        setNataktiv(lux < param.luxstartvaerdi);
-                        lastLuxOver = (lux >= param.luxstartvaerdi);
                     } else {
                         setNataktiv(lux < param.luxstartvaerdi);
                         lastLuxOver = (lux >= param.luxstartvaerdi);
@@ -375,7 +397,7 @@ public:
             lastLuxOver = (lux >= param.luxstartvaerdi);
         }
 
-        // 2) Sæt output/state straks
+        // Sæt output straks
         if (!nataktiv) {
             dimmer->sluk();
             currentState = OFF;
@@ -394,10 +416,16 @@ public:
                 dimmer->setlysiprocentSoft(param.pwmG);
             }
         } else {
-            startA(ntpTid); // Tid-mode
+            startA(ntpTid);
         }
     }
 
+    /**
+     * @brief Hoved-update. Kaldes 1 Hz fra core1.
+     * @param lux Aktuel lux-værdi.
+     * @param pirEvent true hvis PIR aktiveret siden sidst.
+     * @param ntpTid UTC epoch.
+     */
     void update(float lux, bool pirEvent, time_t ntpTid) {
         // 1) Nat/dag logik
         if (param.styringsvalg == "Astro" && param.astroEnabled) {
@@ -407,7 +435,7 @@ public:
             updateLuxNat(lux);
         }
 
-        // 2) Return from forceOff
+        // 2) Return fra forceOff
         if (slukActiveret && nataktiv) {
             slukActiveret = false;
             switch (currentState) {
@@ -462,7 +490,7 @@ public:
             }
         }
 
-        // 4) State machine
+        // 4) State machine countdown
         switch (currentState) {
             case TIMER_A:
                 if (timerA > 0) timerA--;
@@ -510,7 +538,6 @@ public:
 
     void startA(time_t ntpTid) {
         currentState = TIMER_A;
-
         if (isSegmentMode()) {
             int endSec = 0;
             (void)segmentWantAAndEnd(ntpTid, endSec);
@@ -518,7 +545,6 @@ public:
         } else {
             timerA = param.timerA;
         }
-
         dimmer->setlysiprocentSoft(param.pwmA);
     }
 

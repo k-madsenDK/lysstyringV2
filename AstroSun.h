@@ -1,16 +1,35 @@
 #pragma once
-#include <Arduino.h>
-#include <time.h>
-#include <math.h>
+/**
+ * @file AstroSun.h
+ * @brief Beregning af solopgang og solnedgang ud fra dato og GPS-koordinater.
+ *
+ * Baseret på NOAA/Meeus simplified sunrise/sunset equation.
+ * Returnerer tidspunkter i minutter fra midnat (lokal tid inkl. CET/CEST).
+ * Cache: beregnes kun én gang per dato i LysAutomatik.
+ */
 
+#include <cmath>
+#include <ctime>
+#include <Arduino.h>
+
+/** Resultat fra astro-beregning: solopgang og solnedgang i minutter fra midnat. */
 struct AstroTimes {
-    int sunriseMin = -1; // minutter fra midnat lokal tid
+    int sunriseMin = -1;
     int sunsetMin  = -1;
     bool valid() const { return sunriseMin >= 0 && sunsetMin >= 0; }
 };
 
 class AstroSun {
 public:
+    /**
+     * @brief Beregn solopgang/solnedgang i lokal tid.
+     * @param year  Årstal (fx 2026).
+     * @param month Måned (1–12).
+     * @param day   Dag (1–31).
+     * @param latDeg Latitude i grader (N positiv).
+     * @param lonDeg Longitude i grader (E positiv).
+     * @return AstroTimes med sunrise/sunset i minutter fra midnat (lokal tid).
+     */
     static AstroTimes computeLocalTimes(int year, int month, int day, float latDeg, float lonDeg) {
         AstroTimes out;
 
@@ -32,12 +51,14 @@ public:
     }
 
 private:
+    /** Wrap minutter til 0..1439 intervallet. */
     static int wrapMin(int m) {
         while (m < 0) m += 1440;
         while (m >= 1440) m -= 1440;
         return m;
     }
 
+    /** Beregn lokal UTC-offset i sekunder for en given dato (håndterer DST via TZ). */
     static long localUtcOffsetSeconds(int year, int month, int day) {
         tm localNoonTm = {};
         localNoonTm.tm_year = year - 1900;
@@ -64,6 +85,7 @@ private:
         return (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
     }
 
+    /** Beregn dag-nummer i året (1..365/366). */
     static int dayOfYear(int y, int m, int d) {
         static const int cum[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
         int N = cum[m-1] + d;
@@ -74,6 +96,15 @@ private:
     static double degToRad(double d) { return d * M_PI / 180.0; }
     static double radToDeg(double r) { return r * 180.0 / M_PI; }
 
+    /**
+     * @brief NOAA simplified sunrise/sunset beregning.
+     * @param isSunrise true = solopgang, false = solnedgang.
+     * @param N Dag-nummer i året.
+     * @param latDeg Latitude (grader).
+     * @param lonDeg Longitude (grader).
+     * @param zenithDeg Zenith-vinkel (typisk 90.833°).
+     * @return Tidspunkt i minutter fra midnat UTC, eller NAN ved polar nat/dag.
+     */
     static double calcSunTimeUTC(bool isSunrise, int N, double latDeg, double lonDeg, double zenithDeg) {
         double lngHour = lonDeg / 15.0;
 
@@ -102,8 +133,8 @@ private:
         double cosH = (cos(degToRad(zenithDeg)) - (sinDec * sin(degToRad(latDeg))))
                       / (cosDec * cos(degToRad(latDeg)));
 
-        if (cosH > 1.0)  return NAN;
-        if (cosH < -1.0) return NAN;
+        if (cosH > 1.0)  return NAN;   // Polar nat
+        if (cosH < -1.0) return NAN;   // Midnatssol
 
         double H = isSunrise ? (360.0 - radToDeg(acos(cosH))) : radToDeg(acos(cosH));
         H /= 15.0;

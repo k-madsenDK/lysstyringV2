@@ -1,22 +1,21 @@
+#pragma once
 /**
  * @file SimpleSoftwareTimer.h
- * @brief Enkel software timer-klasse til brug i Arduino-loop.
+ * @brief Enkel software timer til brug i Arduino loop().
  *
- * Eksempel på brug:
- *   SimpleSoftwareTimer myTimer;
- *   myTimer.setInterval(1000, myCallback);
- *   void loop() { myTimer.run(); }
+ * Kalder en callback med fast interval. Skal have run() kaldt ofte fra loop().
  */
-#pragma once
+
 #include <Arduino.h>
 
 class SimpleSoftwareTimer {
 public:
     SimpleSoftwareTimer() : prevMillis(0), interval(0), active(false), cb(nullptr) {}
+
     /**
-     * @brief Sæt interval og callback.
-     * @param interval_ms Interval i millisekunder
-     * @param callback Pointer til callback-funktion
+     * @brief Start timer med interval og callback.
+     * @param interval_ms Interval i millisekunder.
+     * @param callback Funktion der kaldes ved timeout.
      */
     void setInterval(uint32_t interval_ms, void (*callback)()) {
         interval = interval_ms;
@@ -24,15 +23,13 @@ public:
         prevMillis = millis();
         active = true;
     }
-     /**
-     * @brief Stop timeren.
-     */
+
+    /** Stop timeren. */
     void stop() {
         active = false;
     }
-    /**
-     * @brief Skal kaldes ofte fra loop(). Udløser callback, hvis interval er gået.
-     */
+
+    /** Kald fra loop() – udløser callback hvis interval er gået. */
     void run() {
         if (active && cb) {
             uint32_t now = millis();

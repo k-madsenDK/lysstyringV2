@@ -1,21 +1,26 @@
-/*
-  HUSK at ændre i .arduino15/packages/rp2040/hardware/rp2040/x.x.x/platform.txt
-  indsæt
-    compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000
-    compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000 
-  dette skal gøres ved hver platform opdatering
-*/
-#include <Arduino.h>
+/**
+ * @file lysstyringV2.ino
+ * @brief Lysstyring til hus – Raspberry Pi Pico W (RP2040) + Earl Philhower Arduino core.
+ *
+ * Dual-core arkitektur:
+ *   Core0: WiFi, NTP/RTC, SD-kort, webserver, filbrowser og FIFO-log-consumer.
+ *   Core1: Sensorlæsning (VEML7700, BMP280), PIR/HW-switch, lys-automatik,
+ *          dimmerstyring og watchdog.
+ *
+ * Kræver tilføjelse i platform.txt ved hver core-opdatering:
+ *   compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000
+ */
 #include <WiFi.h>
-#include <WiFiUdp.h>
 #include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <ArduinoJson.h>
 #include "pico/stdlib.h"
 #include "hardware/rtc.h"
 #include <SdFat.h>
 #include "pico/mutex.h"
 #include <queue>
-#include <time.h>
-#include <stdlib.h>
+#include <ctime>
+#include <cstring>
 
 #include "WebServerHandler.h"
 #include "LysAutomatik.h"
@@ -23,31 +28,31 @@
 #include "LysParam.h"
 #include "SimpleHardwareTimer.h"
 #include "lyslog.h"
-#include <ArduinoJson.h>
+#include <Ticker.h>
 
-// -------------------- SD-kort pins --------------------
+// -------------------- SD-kort pins (SPI) --------------------
 #define SD_MISO 16
 #define SD_CS   17
 #define SD_SCK  18
 #define SD_MOSI 19
 
 // -------------------- Hardware konstanter --------------------
-#define dimmerstart 14000
-#define dimmermax   48000
-#define dimmerrelayben 2
-#define dimmerpwmben 0
-#define softlysstartstop 20
-#define pir1def 14
-#define pir2def 15
-#define hwswdef 13
-#define ntpupdatetimer 10000 // ms mellem ntp check
+#define dimmerstart      14000   // PWM nedre grænse (16-bit)
+#define dimmermax        48000   // PWM øvre grænse (16-bit)
+#define dimmerrelayben   2       // GPIO til relæ
+#define dimmerpwmben     0       // GPIO til AC-dimmer PWM
+#define softlysstartstop 20      // Softlys step frekvens (ubrugt – step styres via LysParam)
+#define pir1def          14      // GPIO til PIR sensor 1
+#define pir2def          15      // GPIO til PIR sensor 2
+#define hwswdef          13      // GPIO til hardware switch (kontakt)
+#define ntpupdatetimer   10000   // Interval for periodisk NTP-sync (ms)
 
-// -------------------- Mutex --------------------
-mutex_t lys_mutex;
-mutex_t nat_mutex;
-mutex_t param_mutex;
-mutex_t pir_mutex;
-mutex_t epoch_mutex;
+// -------------------- Mutex (delt mellem core0 og core1) --------------------
+mutex_t lys_mutex;     // Beskytter dimmer-værdier
+mutex_t nat_mutex;     // Beskytter nataktiv-status
+mutex_t param_mutex;   // Beskytter LysParam konfiguration
+mutex_t pir_mutex;     // Beskytter PIR-tidsstempler
+mutex_t epoch_mutex;   // Beskytter NTP-epoch deling
 
 // -------------------- System / state --------------------
 #define systemNavn "lyskontrol"
@@ -55,26 +60,24 @@ String hostname = systemNavn;
 
 bool core1_separate_stack = true;
 
-bool swaktiv = false;
-int  last_lysprocent = 0;
-bool kopinatstatus = false;
+bool swaktiv = false;          // Software-on flag (sat fra web)
+int  last_lysprocent = 0;      // Aktuel lysprocent (læses fra dimmer)
+bool kopinatstatus = false;    // Kopi af nataktiv for webvisning
 
 LysParam lysparam;
 
 // -------------------- NTP / WiFi --------------------
 WiFiUDP ntpUDP;
-// Offset 0 – vi bruger TZ + localtime() til dansk tid (CET/CEST)
 NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 0, 60000);
 WiFiServer server(80);
 
-// NTP epoch kopi til core1 (UTC)
-volatile uint32_t ntpEpochCopy = 0;
+volatile uint32_t ntpEpochCopy = 0;   // UTC epoch delt med core1
 unsigned long lastPeriodicNtpMs = 0;
 
 // -------------------- Konfiguration / Web / Log --------------------
 MitJsonWiFi* mitjason = new MitJsonWiFi;
 
-// runtime data (produceres på core1)
+// Runtime data (produceres på core1, læses på core0 via mutex)
 float last_lux = 0.0f;
 float last_temp = 0.0f;
 float last_pressure = 0.0f;
@@ -87,7 +90,7 @@ String sidste1pirtid = "";
 String sidste2pirtid = "";
 String sidstehwswtid = "";
 
-// automatik (oprettes på core1)
+// Automatik (oprettes på core1 i setup1)
 LysAutomatik* automatik = nullptr;
 
 WebServerHandler* webHandler = new WebServerHandler(
@@ -114,10 +117,9 @@ std::queue<uint32_t> logQueue;
 SdFat sd;
 bool ntpsat = false;
 
-// Opret log først som pointer (instansieres efter sd.begin)
 LysLog* lyslog = nullptr;
 
-// -------------------- FIFO callback --------------------
+// -------------------- FIFO callback (læs events fra core1) --------------------
 void fifoTimerCallback() {
     while (rp2040.fifo.available()) {
         uint32_t code;
@@ -166,9 +168,9 @@ static bool setupWiFiAndNTP() {
         return false;
     }
 
-    // epoch fra NTP er UTC (offset=0); konverter til lokal tid via TZ
+    // Konverter UTC epoch til lokal tid via TZ og sæt RTC
     time_t rawTime = (time_t)timeClient.getEpochTime();
-    
+
     tm timeinfo;
     if (!localtime_r(&rawTime, &timeinfo)) {
         Serial.println("localtime_r fejlede!");
@@ -186,8 +188,8 @@ static bool setupWiFiAndNTP() {
     };
     rtc_init();
     rtc_set_datetime(&t);
-    
-    // Gem UTC-epoch til core1
+
+    // Del UTC-epoch med core1
     mutex_enter_blocking(&epoch_mutex);
     ntpEpochCopy = (uint32_t)rawTime;
     mutex_exit(&epoch_mutex);
@@ -196,6 +198,9 @@ static bool setupWiFiAndNTP() {
     return true;
 }
 
+/**
+ * @brief Periodisk NTP-opdatering. Kaldes fra loop() hvert ntpupdatetimer ms.
+ */
 static void periodicNtpUpdate() {
     if (WiFi.status() != WL_CONNECTED) return;
     unsigned long now = millis();
@@ -203,10 +208,10 @@ static void periodicNtpUpdate() {
     lastPeriodicNtpMs = now;
 
     if (timeClient.update()) {
-        time_t rawTime = (time_t)timeClient.getEpochTime(); // UTC
+        time_t rawTime = (time_t)timeClient.getEpochTime();
 
         tm timeinfo;
-        if (localtime_r(&rawTime, &timeinfo)) {            // lokal tid m. DST
+        if (localtime_r(&rawTime, &timeinfo)) {
             datetime_t t = {
                 (int16_t)(timeinfo.tm_year + 1900),
                 (int8_t)(timeinfo.tm_mon + 1),
@@ -225,11 +230,12 @@ static void periodicNtpUpdate() {
     }
 }
 
-// -------------------- Astro log line (core0) --------------------
+/**
+ * @brief Logger astro-data for i dag til hardware.log. Kaldes fra core0 via FIFO-event.
+ */
 static void logAstroLineForToday() {
     if (!lyslog) return;
 
-    // Snapshot parametre
     float lat, lon;
     int offSet, offRise;
     String mode;
@@ -280,7 +286,9 @@ static void logAstroLineForToday() {
     lyslog->logHardware(line);
 }
 
-// -------------------- Log af events (core0) --------------------
+/**
+ * @brief Behandler FIFO-logkøen. Kaldes fra loop() når queueDirty er sat.
+ */
 static void checkforlog() {
     queueDirty = false;
 
@@ -289,37 +297,33 @@ static void checkforlog() {
         logQueue.pop();
 
         switch (code) {
-            case nataktivfalse: if (lyslog) lyslog->logNatAktiv(false); break;
-            case nataktivtrue:  if (lyslog) lyslog->logNatAktiv(true);  break;
-            case pir1_detection: if (lyslog) lyslog->logPIR("pir 1"); break;
-            case pir2_detection: if (lyslog) lyslog->logPIR("pir 2"); break;
-            case hwsw_on:        if (lyslog) lyslog->logPIR("Kontakt on"); break;
-            case swsw_on:        if (lyslog) lyslog->logPIR("Software on"); break;
-            case hwsw_off:       if (lyslog) lyslog->logPIR("Kontakt off"); break;
-            case swsw_off:       if (lyslog) lyslog->logPIR("Software off"); break;
-
-            case wdt_reset:       if (lyslog) lyslog->logWatchdogReset(); break;
-            case i2c_reset_wire:  if (lyslog) lyslog->logI2CReset("Wire"); break;
-            case i2c_reset_wire1: if (lyslog) lyslog->logI2CReset("Wire1"); break;
-
-            case astro_log_request:
-                logAstroLineForToday();
-                break;
-
-            default:
-                break;
+            case nataktivfalse:    if (lyslog) lyslog->logNatAktiv(false); break;
+            case nataktivtrue:     if (lyslog) lyslog->logNatAktiv(true);  break;
+            case pir1_detection:   if (lyslog) lyslog->logPIR("pir 1"); break;
+            case pir2_detection:   if (lyslog) lyslog->logPIR("pir 2"); break;
+            case hwsw_on:          if (lyslog) lyslog->logPIR("Kontakt on"); break;
+            case swsw_on:          if (lyslog) lyslog->logPIR("Software on"); break;
+            case hwsw_off:         if (lyslog) lyslog->logPIR("Kontakt off"); break;
+            case swsw_off:         if (lyslog) lyslog->logPIR("Software off"); break;
+            case wdt_reset:        if (lyslog) lyslog->logWatchdogReset(); break;
+            case i2c_reset_wire:   if (lyslog) lyslog->logI2CReset("Wire"); break;
+            case i2c_reset_wire1:  if (lyslog) lyslog->logI2CReset("Wire1"); break;
+            case astro_log_request: logAstroLineForToday(); break;
+            default: break;
         }
     }
 }
 
-// -------------------- WiFi reconnect --------------------
+/**
+ * @brief Genopret WiFi-forbindelse ved tab.
+ */
 static int connectwifi(void) {
     WiFi.disconnect();
     WiFi.setHostname("lyscontrol");
     return WiFi.begin(mitjason->ssid, mitjason->password);
 }
 
-// -------------------- Setup (core0) --------------------
+// ==================== Core0 Setup ====================
 void setup() {
     Serial.begin(115200);
 
@@ -334,9 +338,8 @@ void setup() {
     // Dansk tidszone: CET (UTC+1) og CEST (UTC+2) med EU-regler
     setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
     tzset();
-    
-    
-    // SD init
+
+    // SD-kort init via SPI
     SPI.setRX(SD_MISO);
     SPI.setCS(SD_CS);
     SPI.setSCK(SD_SCK);
@@ -349,10 +352,9 @@ void setup() {
         Serial.println("SD init OK!");
     }
 
-    // Opret log før net
     lyslog = new LysLog(sd, lysparam.lognataktiv, lysparam.logpirdetection);
 
-    // Load konfiguration
+    // Indlæs konfiguration fra SD-kort
     mitjason->loadWiFi(sd, "/wifi.json");
     mitjason->loadDefault(sd, &lysparam);
 
@@ -362,23 +364,23 @@ void setup() {
         delay(5000);
         rp2040.reboot();
     }
-    
+
     datetime_t t;
     rtc_get_datetime(&t);
     Serial.printf("Tid (RTC lokal): %04d-%02d-%02d %02d:%02d:%02d\n",
                   t.year, t.month, t.day, t.hour, t.min, t.sec);
 
-    //fifoTimer->setInterval(10, fifoTimerCallback);
     server.begin();
 
-    // Start core1
+    // Vent på core1 er klar
     rp2040.idleOtherCore();
     ntpsat = true;
     rp2040.resumeOtherCore();
 }
 
-// -------------------- Loop (core0) --------------------
+// ==================== Core0 Loop ====================
 void loop() {
+    // WiFi reconnect
     if (WiFi.status() != WL_CONNECTED) {
         int status = connectwifi();
         if (status == WL_CONNECTED) {
@@ -389,7 +391,7 @@ void loop() {
 
     periodicNtpUpdate();
 
-    // Webserver (behold available() som aftalt)
+    // Webserver
     WiFiClient client = server.available();
     if (client) {
         String req = "";
@@ -406,16 +408,17 @@ void loop() {
         }
         client.stop();
     }
+
+    // Behandl FIFO-events fra core1
     fifoTimerCallback();
     if (queueDirty) checkforlog();
+
     delay(1);
 }
 
 // ===================== Core1 (sensorer / automatik) =====================
 #include <Wire.h>
-
 #include <Adafruit_BMP280.h>
-
 #include "VEML7700_PIO.h"
 #include "Dimmerfunktion.h"
 #include "pirroutiner.h"
@@ -423,9 +426,7 @@ void loop() {
 #include "I2CBusRecover.h"
 #include "hardware/watchdog.h"
 
-
-
-// Sensor / runtime variabler (core1)
+// Sensorer
 VEML7700_PIO* veml = new VEML7700_PIO();
 Adafruit_BMP280* bmp = new Adafruit_BMP280(&Wire1);
 
@@ -433,40 +434,47 @@ bool timer_tik = false;
 bool WEML7700_tilstede = false;
 bool BMP280_tilstede = false;
 
-// I2C-stabilitets tællere
+// I2C fejltællere
 volatile uint32_t i2cWireResets = 0;
 volatile uint32_t i2cWire1Resets = 0;
 static uint8_t bhNoVal = 0;
 static uint8_t bmpBad = 0;
 
-// Dimmer / PIR (core1)
+// Dimmer og PIR
 dimmerfunktion* dimmer = new dimmerfunktion(dimmerrelayben, dimmerpwmben, dimmerstart, dimmermax);
 pirroutiner* pirrou = nullptr;
 
-// Timere
+// Software timere til core1
 SimpleSoftwareTimer myTimer;
 SimpleSoftwareTimer softlysTimer;
 
-// 1 Hz blink (indikator)
+/**
+ * @brief 1 Hz heartbeat – toggler LED og sætter timer_tik flag.
+ */
 void blink() {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
     timer_tik = true;
 }
 
-// 250 ms fast funktion
+/**
+ * @brief 250 ms rutine – softstart/softsluk step og PIR-debounce.
+ */
 void softlysIrq() {
     if (dimmer->softstartAktiv()) dimmer->softstartStep();
     if (dimmer->softslukAktiv())  dimmer->softslukStep();
     if (pirrou) pirrou->timerRoutine();
 }
 
-// Core1: request astro log én gang pr dag (ingen SD, ingen param_mutex)
+// Astro-log: én request per dag via FIFO til core0
 static int lastAstroReqY = -1, lastAstroReqM = -1, lastAstroReqD = -1;
+
+/**
+ * @brief Sender astro_log_request via FIFO én gang pr. dag (kaldet fra core1).
+ */
 static void requestAstroLogOncePerDay(time_t utcEpoch) {
     if (utcEpoch < 1700000000) return;
 
     time_t t = utcEpoch;
-
     tm ti;
     if (!localtime_r(&t, &ti)) return;
 
@@ -480,9 +488,14 @@ static void requestAstroLogOncePerDay(time_t utcEpoch) {
     rp2040.fifo.push_nb(astro_log_request);
 }
 
+/**
+ * @brief Initialisér VEML7700 på Wire (I2C0, GPIO 4+5, 100 kHz).
+ *        Kører bus recovery + scan før init.
+ * @return true hvis VEML7700 fundet og konfigureret.
+ */
 bool setwire0() {
-    I2CBusRecover::recover(5, 4);  // SCL, SDA
-    
+    I2CBusRecover::recover(5, 4);   // SCL=5, SDA=4
+
     Wire.setSDA(4);
     Wire.setSCL(5);
     Wire.begin();
@@ -502,22 +515,24 @@ bool setwire0() {
     return false;
 }
 
-
-bool setwire1(){
-
+/**
+ * @brief Initialisér BMP280 på Wire1 (I2C1, GPIO 10+11, 100 kHz).
+ *        Kører bus recovery før init.
+ * @return true hvis BMP280 fundet.
+ */
+bool setwire1() {
     I2CBusRecover::recover(10, 11);
-    
+
     Wire1.setSDA(10);
     Wire1.setSCL(11);
     Wire1.begin();
     Wire1.setClock(100000);
     Wire1.setTimeout(100);
-    
-    return bmp->begin(0x76);
 
-  }
- 
-  
+    return bmp->begin(0x76);
+}
+
+// ==================== Core1 Setup ====================
 void setup1() {
     while (!ntpsat) delay(100);
 
@@ -525,20 +540,18 @@ void setup1() {
         rp2040.fifo.push_nb(wdt_reset);
     }
 
-   WEML7700_tilstede  = setwire0();
+    WEML7700_tilstede = setwire0();
 
     pinMode(LED_BUILTIN, OUTPUT);
 
-    // Opret automatik + pir efter mutex/param er klar
     automatik = new LysAutomatik(lysparam, dimmer);
     pirrou = new pirroutiner(pir1def, pir2def, hwswdef, &sidste1pirtid, &sidste2pirtid, &sidstehwswtid, lysparam);
 
     myTimer.setInterval(1000, blink);
     softlysTimer.setInterval(250, softlysIrq);
 
-
     BMP280_tilstede = setwire1();
-    
+
     Serial.println("Tester BMP280 sensor...");
     if (!BMP280_tilstede) {
         Serial.println("BMP280 ikke fundet på I2C-bussen!");
@@ -546,10 +559,11 @@ void setup1() {
         Serial.print("Temperatur: "); Serial.print(bmp->readTemperature()); Serial.println(" *C");
         Serial.print("Lufttryk: ");  Serial.print(bmp->readPressure() / 100.0F); Serial.println(" hPa");
     }
-    //0BMP280_tilstede = false;
+
     watchdog_enable(3000, 1);
 }
 
+// ==================== Core1 Loop ====================
 static uint32_t paramSkipCount = 0;
 static bool automatikInitDone = false;
 
@@ -561,7 +575,7 @@ void loop1() {
     if (timer_tik) {
         timer_tik = false;
 
-        // NTP epoch (UTC) snapshot
+        // Hent NTP epoch (UTC) fra core0
         uint32_t ntpLocal;
         mutex_enter_blocking(&epoch_mutex);
         ntpLocal = ntpEpochCopy;
@@ -569,15 +583,15 @@ void loop1() {
 
         requestAstroLogOncePerDay((time_t)ntpLocal);
 
-        // Nat/dag status (til web) - NB: denne viser state fra sidste update/init
+        // Opdater nataktiv-kopi til web
         mutex_enter_blocking(&nat_mutex);
         kopinatstatus = automatik ? automatik->getNataktiv() : false;
         mutex_exit(&nat_mutex);
 
+        // ---- VEML7700 læsning (Wire/I2C0) ----
         if (WEML7700_tilstede) {
             watchdog_update();
             float ny_lux = veml->readLux();
-            
             if (isfinite(ny_lux) && ny_lux >= 0.0f && ny_lux <= 120000.0f) {
                 last_lux = ny_lux;
                 bhNoVal = 0;
@@ -593,13 +607,11 @@ void loop1() {
             }
         }
 
-        // ---------- BOOT INIT (kør én gang) ----------
-        // Snap state straks når NTP tid er "realistisk".
+        // ---- Boot init (kør én gang når NTP-tid er realistisk) ----
         if (!automatikInitDone && automatik && ntpLocal >= 1700000000UL) {
             float bootLux = last_lux;
 
-            // Brug frisk BH1750 værdi hvis den findes lige nu
-            if (WEML7700_tilstede ) {
+            if (WEML7700_tilstede) {
                 float v = veml->readLux();
                 if (isfinite(v) && v >= 0.0f && v <= 20000.0f) bootLux = v;
                 bhNoVal = 0;
@@ -608,14 +620,12 @@ void loop1() {
             automatik->initFromNow(bootLux, (time_t)ntpLocal);
             automatikInitDone = true;
 
-            // Opdater nataktivstatus til web med det samme efter init
             mutex_enter_blocking(&nat_mutex);
             kopinatstatus = automatik->getNataktiv();
             mutex_exit(&nat_mutex);
         }
-        // -------------------------------------------
 
-        // BMP280 (Wire1)
+        // ---- BMP280 læsning (Wire1/I2C1) ----
         if (BMP280_tilstede) {
             float t = bmp->readTemperature();
             float p = bmp->readPressure() / 100.0F;
@@ -636,7 +646,7 @@ void loop1() {
             }
         }
 
-        // tvungen on/off
+        // ---- Tvungen on/off (hardware switch / software on) ----
         tvungeton = false;
         if (pirrou && pirrou->isHWSWBenLow()) hwaktiv = true;
         else if (hwaktiv) { hwaktiv = false; if (pirrou) pirrou->logHWSWOff(); }
@@ -646,6 +656,7 @@ void loop1() {
         static bool hwaktivlocal = false;
 
         if (!tvungeton) {
+            // Sluk tvungen tilstand, returner til automatik
             if (hwaktivlocal && automatik) {
                 hwaktivlocal = false;
                 automatik->forceOff();
@@ -657,6 +668,7 @@ void loop1() {
                 if (pirrou->isPIR2Activated()) pirstatus = true;
             }
 
+            // Opdater automatik (kun hvis mutex er ledig – undgå deadlock)
             uint32_t owner = 0;
             if (mutex_try_enter(&param_mutex, &owner)) {
                 if (automatik) automatik->update(last_lux, pirstatus, (time_t)ntpLocal);
@@ -665,6 +677,7 @@ void loop1() {
                 paramSkipCount++;
             }
         } else {
+            // Tvungen on: tænd lys 100%
             if (!hwaktivlocal) {
                 dimmer->taend();
                 hwaktivlocal = true;
@@ -674,7 +687,7 @@ void loop1() {
         internaltemp = analogReadTemp();
     }
 
-    // Opdater lys hvis core0 har sat flag
+    // Opdater lysprocent hvis core0 har sat flag (fra web-slider)
     mutex_enter_blocking(&lys_mutex);
     if (updatelysprocent) {
         updatelysprocent = false;
