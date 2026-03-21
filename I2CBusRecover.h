@@ -37,14 +37,19 @@ namespace I2CBusRecover {
       }
     }
 
-    // Generér et STOP hvis SDA nu er høj
-    bool ok = (digitalRead(sdaPin) == HIGH);
-    if (ok) {
-      digitalWrite(sclPin, HIGH);
-      delayMicroseconds(8);
-      // SDA allerede højt = STOP
+    
+    // Efter SCL-toggling, generer STOP:
+    if (digitalRead(sdaPin) == HIGH) {
+        // SDA er fri - generer STOP for sikkerhed
+        pinMode(sdaPin, OUTPUT);
+        digitalWrite(sdaPin, LOW);
+        delayMicroseconds(8);
+        digitalWrite(sclPin, HIGH);
+        delayMicroseconds(8);
+        pinMode(sdaPin, INPUT_PULLUP);  // SDA goes high = STOP
+        delayMicroseconds(8);
     }
-    return ok;
+    return false;
   }
 
   // Simpel scan (kan bruges efter init)

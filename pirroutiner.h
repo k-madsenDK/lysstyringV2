@@ -100,12 +100,15 @@ class pirroutiner {
       if(pir1_count >= 3 && !pir1_aktiveret && !pir1_aktiv) {
         pir1_aktiveret = true;
         pir1_aktiv = true;
-        mutex_enter_blocking(&param_mutex);
-        if(param.logpirdetection) rp2040.fifo.push_nb(pir1_detection);
-        mutex_exit(&param_mutex);
-        mutex_enter_blocking(&pir_mutex);
-        *pir1_tid = tidSomStrengFraRTC();
-        mutex_exit(&pir_mutex);
+        uint32_t owner = 0;
+        if (mutex_try_enter(&param_mutex, &owner)) {
+            if(param.logpirdetection) rp2040.fifo.push_nb(pir1_detection);
+            mutex_exit(&param_mutex);
+          }
+        if (mutex_try_enter(&pir_mutex, &owner)) {
+            *pir1_tid = tidSomStrengFraRTC();
+            mutex_exit(&pir_mutex);
+          }
       }
     } else {
       pir1_count = 0;
@@ -119,12 +122,16 @@ class pirroutiner {
       if(pir2_count >= 3 && !pir2_aktiveret && !pir2_aktiv) {
         pir2_aktiveret = true;
         pir2_aktiv = true;
-        mutex_enter_blocking(&param_mutex);
-        if(param.logpirdetection) rp2040.fifo.push_nb(pir2_detection);
-        mutex_exit(&param_mutex);
-        mutex_enter_blocking(&pir_mutex);
-        *pir2_tid = tidSomStrengFraRTC();
-        mutex_exit(&pir_mutex);
+        // Brug dette mønster alle steder i stedet for mutex_enter_blocking(&param_mutex):
+        uint32_t owner = 0;
+        if (mutex_try_enter(&param_mutex, &owner)) {
+            if(param.logpirdetection) rp2040.fifo.push_nb(pir2_detection);
+            mutex_exit(&param_mutex);
+        }
+        if (mutex_try_enter(&pir_mutex, &owner)) {
+            *pir2_tid = tidSomStrengFraRTC();
+            mutex_exit(&pir_mutex);
+        }
       }
     } else {
       pir2_count = 0;
@@ -137,12 +144,17 @@ class pirroutiner {
       hwsw_count++;
       if(hwsw_count >= 2 && !hwsw_aktiveret) {
         hwsw_aktiveret = true;
-        mutex_enter_blocking(&param_mutex);
-        if(param.logpirdetection) rp2040.fifo.push_nb(hwsw_on); //log hvis valgt
-          mutex_exit(&param_mutex);
-          mutex_enter_blocking(&pir_mutex);
-          *hwsw_tid = tidSomStrengFraRTC();
-          mutex_exit(&pir_mutex);
+        // Brug dette mønster alle steder i stedet for mutex_enter_blocking(&param_mutex):
+        uint32_t owner = 0;
+        if (mutex_try_enter(&param_mutex, &owner)) {
+            if(param.logpirdetection) rp2040.fifo.push_nb(hwsw_on); //log hvis valgt
+            mutex_exit(&param_mutex);
+          }
+        if (mutex_try_enter(&pir_mutex, &owner)) {
+            *hwsw_tid = tidSomStrengFraRTC();
+            mutex_exit(&pir_mutex);
+            }
+
           }
         } else {
         hwsw_count = 0;
@@ -159,9 +171,11 @@ class pirroutiner {
             rp2040.fifo.push_nb(hwsw_off);
         }
         // Opdater tidsstempel
-        mutex_enter_blocking(&pir_mutex);
-        *hwsw_tid = tidSomStrengFraRTC();
-        mutex_exit(&pir_mutex);
+        uint32_t owner = 0;
+        if (mutex_try_enter(&pir_mutex, &owner)) {
+            *hwsw_tid = tidSomStrengFraRTC();
+            mutex_exit(&pir_mutex);
+            }
     }
     // ------ Public getters for PIR og HW ------
     bool isPIR1Activated() {
@@ -175,9 +189,11 @@ class pirroutiner {
       return wasActivated;
     }
     void setswswOn(void){//log hvis valgt
-        mutex_enter_blocking(&param_mutex);
-        if(param.logpirdetection) rp2040.fifo.push_nb(swsw_on);
-        mutex_exit(&param_mutex);
+      uint32_t owner = 0;
+      if (mutex_try_enter(&param_mutex, &owner)) {
+          if(param.logpirdetection) rp2040.fifo.push_nb(swsw_on);
+          mutex_exit(&param_mutex);
+        }
       }
       
     bool isPIR1Present() { return pir1_tilstede; }
