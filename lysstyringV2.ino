@@ -4,8 +4,8 @@
  *
  * Dual-core arkitektur:
  *   Core0: WiFi, NTP/RTC, SD-kort, webserver, filbrowser og FIFO-log-consumer.
- *   Core1: Sensorlæsning (VEML7700, BMP280), PIR/HW-switch, lys-automatik,
- *          dimmerstyring og watchdog.
+ *   Core1: Sensorlæsning (VEML7700 lux, BMP280 tryk/temp), PIR/HW-switch,
+ *          lys-automatik (Tid/Klokken/Astro), dimmerstyring og watchdog.
  *
  * Kræver tilføjelse i platform.txt ved hver core-opdatering:
  *   compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000
@@ -41,7 +41,7 @@
 #define dimmermax        48000   // PWM øvre grænse (16-bit)
 #define dimmerrelayben   2       // GPIO til relæ
 #define dimmerpwmben     0       // GPIO til AC-dimmer PWM
-#define softlysstartstop 20      // Softlys step frekvens (ubrugt – step styres via LysParam)
+#define softlysstartstop 20      // Step frekvens default (bruges ikke – step via LysParam)
 #define pir1def          14      // GPIO til PIR sensor 1
 #define pir2def          15      // GPIO til PIR sensor 2
 #define hwswdef          13      // GPIO til hardware switch (kontakt)
@@ -68,6 +68,7 @@ LysParam lysparam;
 
 // -------------------- NTP / WiFi --------------------
 WiFiUDP ntpUDP;
+// Offset 0 – vi bruger TZ + localtime() til dansk tid (CET/CEST)
 NTPClient timeClient(ntpUDP, "dk.pool.ntp.org", 0, 60000);
 WiFiServer server(80);
 
@@ -198,9 +199,7 @@ static bool setupWiFiAndNTP() {
     return true;
 }
 
-/**
- * @brief Periodisk NTP-opdatering. Kaldes fra loop() hvert ntpupdatetimer ms.
- */
+/** Periodisk NTP-opdatering. Kaldes fra loop() hvert ntpupdatetimer ms. */
 static void periodicNtpUpdate() {
     if (WiFi.status() != WL_CONNECTED) return;
     unsigned long now = millis();
@@ -230,9 +229,7 @@ static void periodicNtpUpdate() {
     }
 }
 
-/**
- * @brief Logger astro-data for i dag til hardware.log. Kaldes fra core0 via FIFO-event.
- */
+/** Logger astro-data for i dag til hardware.log. Kaldes fra core0 via FIFO-event. */
 static void logAstroLineForToday() {
     if (!lyslog) return;
 
@@ -286,9 +283,7 @@ static void logAstroLineForToday() {
     lyslog->logHardware(line);
 }
 
-/**
- * @brief Behandler FIFO-logkøen. Kaldes fra loop() når queueDirty er sat.
- */
+/** Behandler FIFO-logkøen. Kaldes fra loop() når queueDirty er sat. */
 static void checkforlog() {
     queueDirty = false;
 
@@ -314,9 +309,7 @@ static void checkforlog() {
     }
 }
 
-/**
- * @brief Genopret WiFi-forbindelse ved tab.
- */
+/** Genopret WiFi-forbindelse ved tab. */
 static int connectwifi(void) {
     WiFi.disconnect();
     WiFi.setHostname("lyscontrol");
@@ -448,17 +441,13 @@ pirroutiner* pirrou = nullptr;
 SimpleSoftwareTimer myTimer;
 SimpleSoftwareTimer softlysTimer;
 
-/**
- * @brief 1 Hz heartbeat – toggler LED og sætter timer_tik flag.
- */
+/** 1 Hz heartbeat – toggler LED og sætter timer_tik flag. */
 void blink() {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
     timer_tik = true;
 }
 
-/**
- * @brief 250 ms rutine – softstart/softsluk step og PIR-debounce.
- */
+/** 250 ms rutine – softstart/softsluk step og PIR-debounce. */
 void softlysIrq() {
     if (dimmer->softstartAktiv()) dimmer->softstartStep();
     if (dimmer->softslukAktiv())  dimmer->softslukStep();
@@ -468,9 +457,7 @@ void softlysIrq() {
 // Astro-log: én request per dag via FIFO til core0
 static int lastAstroReqY = -1, lastAstroReqM = -1, lastAstroReqD = -1;
 
-/**
- * @brief Sender astro_log_request via FIFO én gang pr. dag (kaldet fra core1).
- */
+/** Sender astro_log_request via FIFO én gang pr. dag (kaldet fra core1). */
 static void requestAstroLogOncePerDay(time_t utcEpoch) {
     if (utcEpoch < 1700000000) return;
 
@@ -611,6 +598,7 @@ void loop1() {
         if (!automatikInitDone && automatik && ntpLocal >= 1700000000UL) {
             float bootLux = last_lux;
 
+            // Brug frisk VEML7700-værdi hvis tilgængelig
             if (WEML7700_tilstede) {
                 float v = veml->readLux();
                 if (isfinite(v) && v >= 0.0f && v <= 20000.0f) bootLux = v;

@@ -36,15 +36,15 @@ public:
         appendToFile(PIRLOG_FILENAME, makeTimeLine(pirNavn + "_ACTIVATED"));
     }
 
-    /** Log hardware-event (ALTID aktiv). */
+    /** Log hardware-event (ALTID aktiv, uanset flag). */
     void logHardware(const String& event) {
         appendToFile(HARDWARELOG_FILENAME, makeTimeLine(event));
     }
 
-    void logWatchdogReset()                { logHardware("WATCHDOG_RESET"); }
-    void logI2CReset(const char* bus)      { logHardware(String("I2C_RESET_") + bus); }
-    void logWiFiReconnect(const String& ip){ logHardware(String("WIFI_RECONNECT ") + ip); }
-    void logBootReboot(const char* reason) { logHardware(String("BOOT_REBOOT ") + reason); }
+    void logWatchdogReset()                 { logHardware("WATCHDOG_RESET"); }
+    void logI2CReset(const char* bus)       { logHardware(String("I2C_RESET_") + bus); }
+    void logWiFiReconnect(const String& ip) { logHardware(String("WIFI_RECONNECT ") + ip); }
+    void logBootReboot(const char* reason)  { logHardware(String("BOOT_REBOOT ") + reason); }
 
     void setLogNatAktiv(bool enabled) { natLogEnabled = enabled; }
     void setLogPIRAktiv(bool enabled) { pirLogEnabled = enabled; }
@@ -54,7 +54,7 @@ private:
     bool natLogEnabled;
     bool pirLogEnabled;
 
-    /** Opret tidsstemplet log-linje. */
+    /** Opret tidsstemplet log-linje fra RTC. */
     String makeTimeLine(const String& event) {
         datetime_t t;
         rtc_get_datetime(&t);

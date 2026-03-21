@@ -3,7 +3,7 @@
  * @file SimpleSoftwareTimer.h
  * @brief Enkel software timer til brug i Arduino loop().
  *
- * Kalder en callback med fast interval. Skal have run() kaldt ofte fra loop().
+ * Kalder en callback med fast interval. Kræver at run() kaldes ofte fra loop().
  */
 
 #include <Arduino.h>
@@ -29,7 +29,7 @@ public:
         active = false;
     }
 
-    /** Kald fra loop() – udløser callback hvis interval er gået. */
+    /** Kald fra loop() – udløser callback hvis interval er overskredet. */
     void run() {
         if (active && cb) {
             uint32_t now = millis();

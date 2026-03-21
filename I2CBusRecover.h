@@ -4,7 +4,7 @@
  * @brief I2C bus recovery for RP2040.
  *
  * Toggler SCL 9 gange for at frigive en hængt I2C-slave, efterfulgt af en STOP-condition.
- * Inkluderer en simpel bus-scanner til debug.
+ * Inkluderer en simpel bus-scanner til debug-output på Serial.
  *
  * Brug: Kald recover() FØR Wire.begin().
  */
@@ -51,7 +51,7 @@ namespace I2CBusRecover {
             delayMicroseconds(8);
             digitalWrite(sclPin, HIGH);
             delayMicroseconds(8);
-            pinMode(sdaPin, INPUT_PULLUP);
+            pinMode(sdaPin, INPUT_PULLUP);  // SDA goes high = STOP
             delayMicroseconds(8);
         }
         return false;

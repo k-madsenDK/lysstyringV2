@@ -4,8 +4,8 @@
  * @brief Beregning af solopgang og solnedgang ud fra dato og GPS-koordinater.
  *
  * Baseret på NOAA/Meeus simplified sunrise/sunset equation.
- * Returnerer tidspunkter i minutter fra midnat (lokal tid inkl. CET/CEST).
- * Cache: beregnes kun én gang per dato i LysAutomatik.
+ * Returnerer tidspunkter i minutter fra midnat (lokal tid inkl. CET/CEST via TZ).
+ * Bruges af LysAutomatik – cache beregnes én gang per dato.
  */
 
 #include <cmath>
@@ -14,32 +14,33 @@
 
 /** Resultat fra astro-beregning: solopgang og solnedgang i minutter fra midnat. */
 struct AstroTimes {
-    int sunriseMin = -1;
-    int sunsetMin  = -1;
+    int sunriseMin = -1;    // Minutter fra midnat, lokal tid
+    int sunsetMin  = -1;    // Minutter fra midnat, lokal tid
     bool valid() const { return sunriseMin >= 0 && sunsetMin >= 0; }
 };
 
 class AstroSun {
 public:
     /**
-     * @brief Beregn solopgang/solnedgang i lokal tid.
+     * @brief Beregn solopgang/solnedgang i lokal tid for en given dato og position.
      * @param year  Årstal (fx 2026).
      * @param month Måned (1–12).
      * @param day   Dag (1–31).
      * @param latDeg Latitude i grader (N positiv).
      * @param lonDeg Longitude i grader (E positiv).
-     * @return AstroTimes med sunrise/sunset i minutter fra midnat (lokal tid).
+     * @return AstroTimes med sunrise/sunset i minutter fra midnat (lokal tid via TZ).
      */
     static AstroTimes computeLocalTimes(int year, int month, int day, float latDeg, float lonDeg) {
         AstroTimes out;
 
         int N = dayOfYear(year, month, day);
-        const double zenith = 90.833;
+        const double zenith = 90.833;   // Standard atmosfærisk refraktion
 
         double sunriseUTC = calcSunTimeUTC(true,  N, latDeg, lonDeg, zenith);
         double sunsetUTC  = calcSunTimeUTC(false, N, latDeg, lonDeg, zenith);
         if (!isfinite(sunriseUTC) || !isfinite(sunsetUTC)) return out;
 
+        // Konverter UTC-minutter til lokal tid via TZ-offset
         long tzOffsetSec = localUtcOffsetSeconds(year, month, day);
 
         int sunriseLocalMin = wrapMin((int)lround(sunriseUTC + (double)tzOffsetSec / 60.0));
@@ -58,15 +59,18 @@ private:
         return m;
     }
 
-    /** Beregn lokal UTC-offset i sekunder for en given dato (håndterer DST via TZ). */
+    /**
+     * @brief Beregn lokal UTC-offset i sekunder for en given dato.
+     *        Håndterer DST automatisk via setenv("TZ",...) / mktime().
+     */
     static long localUtcOffsetSeconds(int year, int month, int day) {
         tm localNoonTm = {};
-        localNoonTm.tm_year = year - 1900;
-        localNoonTm.tm_mon  = month - 1;
-        localNoonTm.tm_mday = day;
-        localNoonTm.tm_hour = 12;
-        localNoonTm.tm_min  = 0;
-        localNoonTm.tm_sec  = 0;
+        localNoonTm.tm_year  = year - 1900;
+        localNoonTm.tm_mon   = month - 1;
+        localNoonTm.tm_mday  = day;
+        localNoonTm.tm_hour  = 12;
+        localNoonTm.tm_min   = 0;
+        localNoonTm.tm_sec   = 0;
         localNoonTm.tm_isdst = -1;
 
         time_t localNoon = mktime(&localNoonTm);
@@ -112,12 +116,15 @@ private:
             ? (double)N + ((6.0  - lngHour) / 24.0)
             : (double)N + ((18.0 - lngHour) / 24.0);
 
+        // Sol-anomali
         double M = (0.9856 * t) - 3.289;
 
+        // Sol-længde
         double L = M + (1.916 * sin(degToRad(M))) + (0.020 * sin(2 * degToRad(M))) + 282.634;
         L = fmod(L, 360.0);
         if (L < 0) L += 360.0;
 
+        // Rektascension
         double RA = radToDeg(atan(0.91764 * tan(degToRad(L))));
         RA = fmod(RA, 360.0);
         if (RA < 0) RA += 360.0;
@@ -127,23 +134,26 @@ private:
         RA = RA + (Lquadrant - RAquadrant);
         RA /= 15.0;
 
+        // Deklination
         double sinDec = 0.39782 * sin(degToRad(L));
         double cosDec = cos(asin(sinDec));
 
+        // Timevinkel
         double cosH = (cos(degToRad(zenithDeg)) - (sinDec * sin(degToRad(latDeg))))
                       / (cosDec * cos(degToRad(latDeg)));
 
-        if (cosH > 1.0)  return NAN;   // Polar nat
-        if (cosH < -1.0) return NAN;   // Midnatssol
+        if (cosH > 1.0)  return NAN;   // Polar nat – solen stiger ikke
+        if (cosH < -1.0) return NAN;   // Midnatssol – solen går ikke ned
 
         double H = isSunrise ? (360.0 - radToDeg(acos(cosH))) : radToDeg(acos(cosH));
         H /= 15.0;
 
+        // UTC-tid i timer
         double T = H + RA - (0.06571 * t) - 6.622;
         double UT = T - lngHour;
         UT = fmod(UT, 24.0);
         if (UT < 0) UT += 24.0;
 
-        return UT * 60.0;
+        return UT * 60.0;  // Returner i minutter
     }
 };

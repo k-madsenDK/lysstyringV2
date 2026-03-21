@@ -160,7 +160,7 @@ public:
         JsonDocument doc;
         JsonObject d = doc["Default"].to<JsonObject>();
 
-        d["styringsvalg"] = param->styringsvalg;
+        d["styringsvalg"]  = param->styringsvalg;
         d["luxstartvaerdi"] = param->luxstartvaerdi;
 
         d["TimerA"] = param->timerA;

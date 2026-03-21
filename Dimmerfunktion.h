@@ -5,7 +5,7 @@
  *
  * PWM 10 kHz, 16-bit range. Relæ til/frakobling af last.
  * Softstart og softsluk med konfigurerbart step (fra LysParam::aktuelStepfrekvens).
- * Step-funktion kaldes 4 Hz fra softlysIrq() i core1.
+ * Step-funktioner kaldes 4 Hz fra softlysIrq() i core1.
  */
 
 #include <Arduino.h>
@@ -30,6 +30,7 @@ private:
 
     LysParam* lysparam_ptr = nullptr;
 
+    /** Initialisér PWM og relæ-GPIO. */
     void dimmerinit() {
         analogWriteRange(65535);
         analogWriteFreq(10000);
@@ -42,7 +43,7 @@ private:
     void relayOn()  { digitalWrite(relayben, 1); }
     void relayOff() { digitalWrite(relayben, 0); }
 
-    /** Sæt lysprocent direkte (intern – bruges af softstart/sluk). */
+    /** Sæt lysprocent direkte (intern – bruges af softstart/sluk step). */
     bool setlysiprocent(int nyvaerdi) {
         if (nyvaerdi < 0 || nyvaerdi > 100) return false;
         aktuelprocentvaerdi = nyvaerdi;
@@ -92,7 +93,7 @@ public:
         soft_nuvaerende = aktuelprocentvaerdi;
     }
 
-    /** Kaldes 4 Hz – ét step op mod soft_slut. */
+    /** Kaldes 4 Hz fra softlysIrq() – ét step op mod soft_slut. */
     void softstartStep() {
         if (!softstart_aktiv) return;
         soft_nuvaerende += soft_step;
@@ -115,7 +116,7 @@ public:
         soft_nuvaerende = aktuelprocentvaerdi;
     }
 
-    /** Kaldes 4 Hz – ét step ned mod soft_slut. */
+    /** Kaldes 4 Hz fra softlysIrq() – ét step ned mod soft_slut. */
     void softslukStep() {
         if (!softsluk_aktiv) return;
         soft_nuvaerende -= soft_step;

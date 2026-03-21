@@ -4,7 +4,7 @@
  * @brief PIR-sensor og hardware-switch håndtering med debounce og tidsstempling.
  *
  * Håndterer 2× PIR-indgange og 1× hardware switch (alle aktiv LOW med intern pull-up).
- * Debounce via tæller i timerRoutine() som kaldes 4 Hz (250 ms).
+ * Debounce via tæller i timerRoutine() som kaldes 4 Hz (250 ms) fra softlysIrq().
  * Log-events sendes til core0 via FIFO. Tidsstempler beskyttes med pir_mutex.
  */
 
@@ -43,7 +43,7 @@ private:
 
     LysParam& param;
 
-    /** Initialisér GPIO med intern pull-up. */
+    /** Initialisér GPIO med intern pull-up (aktiv LOW). */
     void initInputs(void) {
         if (pir1ben >= 0 && pir1ben < 29) {
             pinMode(pir1ben, INPUT_PULLUP);
@@ -93,7 +93,7 @@ public:
      *        Detekterer PIR/HW aktivering, opdaterer tidsstempler og sender FIFO-events.
      */
     void timerRoutine() {
-        // PIR1
+        // PIR1 (aktiv LOW, debounce >= 3 samples = 750 ms)
         if (pir1_tilstede) {
             if (digitalRead(pir1ben) == LOW) {
                 pir1_count++;
@@ -116,7 +116,7 @@ public:
             }
         }
 
-        // PIR2
+        // PIR2 (aktiv LOW, debounce >= 3 samples)
         if (pir2_tilstede) {
             if (digitalRead(pir2ben) == LOW) {
                 pir2_count++;
@@ -139,7 +139,7 @@ public:
             }
         }
 
-        // Hardware switch
+        // Hardware switch (aktiv LOW, debounce >= 2 samples = 500 ms)
         if (hwsw_tilstede) {
             if (digitalRead(hwswben) == LOW) {
                 hwsw_count++;
@@ -163,7 +163,7 @@ public:
         }
     }
 
-    /** Log hardware switch OFF (kald ved overgang aktiv → inaktiv). */
+    /** Log hardware switch OFF event via FIFO (kald ved overgang aktiv → inaktiv). */
     void logHWSWOff() {
         if (param.logpirdetection) {
             rp2040.fifo.push_nb(hwsw_off);
@@ -196,14 +196,14 @@ public:
         }
     }
 
-    bool isPIR1Present() { return pir1_tilstede; }
-    bool isPIR2Present() { return pir2_tilstede; }
-    bool isPIR1BenLow()  { return pir1_aktiv; }
-    bool isPIR2BenLow()  { return pir2_aktiv; }
-    String getPIR1Time() { return *pir1_tid; }
-    String getPIR2Time() { return *pir2_tid; }
+    bool isPIR1Present()  { return pir1_tilstede; }
+    bool isPIR2Present()  { return pir2_tilstede; }
+    bool isPIR1BenLow()   { return pir1_aktiv; }
+    bool isPIR2BenLow()   { return pir2_aktiv; }
+    String getPIR1Time()  { return *pir1_tid; }
+    String getPIR2Time()  { return *pir2_tid; }
 
-    bool isHWSWPresent() { return hwsw_tilstede; }
-    bool isHWSWBenLow()  { return hwsw_aktiv; }
-    String getHWSWTime() { return *hwsw_tid; }
+    bool isHWSWPresent()  { return hwsw_tilstede; }
+    bool isHWSWBenLow()   { return hwsw_aktiv; }
+    String getHWSWTime()  { return *hwsw_tid; }
 };

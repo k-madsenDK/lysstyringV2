@@ -1,9 +1,9 @@
 #pragma once
 /**
  * @file VEML7700_PIO.h
- * @brief Minimal VEML7700 ambient light sensor driver.
+ * @brief Minimal VEML7700 ambient light sensor driver via standard TwoWire.
  *
- * Kommunikerer via standard TwoWire (beginTransmission/write/endTransmission/requestFrom).
+ * Kommunikerer via beginTransmission/write/endTransmission/requestFrom.
  * Kompatibel med hardware Wire på RP2040.
  * Ingen eksterne afhængigheder ud over Wire.h.
  *
@@ -45,7 +45,7 @@ public:
 
     /**
      * @brief Initialisér sensoren. Test I2C-forbindelse og konfigurer gain/IT/power-on.
-     * @param wire Pointer til TwoWire instans.
+     * @param wire Pointer til TwoWire instans (hardware Wire).
      * @return true hvis sensoren svarer på I2C-adressen.
      */
     bool begin(TwoWire* wire) {
@@ -129,7 +129,7 @@ private:
 
     /**
      * @brief Beregn resolution (lux per count) ud fra gain og integration time.
-     *        Base: 0.0576 lux/count ved gain=1×, IT=100ms (fra Vishay datasheet).
+     *        Base: 0.0576 lux/count ved gain=1×, IT=100ms (Vishay datasheet).
      */
     float resolution() const {
         float base = 0.0576f;
@@ -153,7 +153,7 @@ private:
         return base;
     }
 
-    /** @brief Skriv ALS_CONF register (gain + IT + power-on). */
+    /** @brief Skriv ALS_CONF register (gain + IT + power-on, ALS_SD=0). */
     bool writeConf() {
         uint16_t conf = (uint16_t)_gain | (uint16_t)_it;
         return writeReg(REG_ALS_CONF, conf);

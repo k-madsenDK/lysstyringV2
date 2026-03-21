@@ -3,7 +3,7 @@
  * @file SimpleHardwareTimer.h
  * @brief Wrapper for Ticker hardware timer.
  *
- * Brug hardware-timer til præcis timing uafhængigt af loop().
+ * Præcis timing uafhængigt af loop()-hastighed.
  */
 
 #include <Ticker.h>
