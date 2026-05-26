@@ -30,6 +30,7 @@
 #include "lyslog.h"
 #include <Ticker.h>
 
+
 // -------------------- SD-kort pins (SPI) --------------------
 #define SD_MISO 16
 #define SD_CS   17
@@ -45,7 +46,7 @@
 #define pir1def          14      // GPIO til PIR sensor 1
 #define pir2def          15      // GPIO til PIR sensor 2
 #define hwswdef          13      // GPIO til hardware switch (kontakt)
-#define ntpupdatetimer   10000   // Interval for periodisk NTP-sync (ms)
+#define ntpupdatetimer (12UL * 60UL * 60UL * 1000UL)  // 12 timer
 
 // -------------------- Mutex (delt mellem core0 og core1) --------------------
 mutex_t lys_mutex;     // Beskytter dimmer-værdier
@@ -434,7 +435,13 @@ static uint8_t bhNoVal = 0;
 static uint8_t bmpBad = 0;
 
 // Dimmer og PIR
-dimmerfunktion* dimmer = new dimmerfunktion(dimmerrelayben, dimmerpwmben, dimmerstart, dimmermax);
+dimmerfunktion* dimmer = new dimmerfunktion(
+    dimmerrelayben,
+    dimmerpwmben,
+    dimmerstart,
+    dimmermax,
+    &lysparam
+);
 pirroutiner* pirrou = nullptr;
 
 // Software timere til core1
@@ -579,7 +586,7 @@ void loop1() {
         if (WEML7700_tilstede) {
             watchdog_update();
             float ny_lux = veml->readLux();
-            if (isfinite(ny_lux) && ny_lux >= 0.0f && ny_lux <= 120000.0f) {
+            if (isfinite(ny_lux) && ny_lux >= 0.0f && ny_lux <= 140000.0f) {
                 last_lux = ny_lux;
                 bhNoVal = 0;
             } else {
@@ -685,4 +692,4 @@ void loop1() {
     mutex_exit(&lys_mutex);
 
     delay(5);
-}
+}    
