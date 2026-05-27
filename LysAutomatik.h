@@ -58,9 +58,8 @@ private:
     }
 
     static bool inRangeSec(int nowSec, int startSec, int endSec) {
-        // OBS:
         // start == end betyder IKKE aktiv.
-        // Det forhindrer segment 2/3 med 00:00 -> 00:00 i at blive "altid aktiv".
+        // Det forhindrer segment 2/3 med fx 00:00 -> 00:00 i at være "altid aktiv".
         if (startSec == endSec) return false;
 
         if (startSec < endSec) {
@@ -85,7 +84,7 @@ private:
     static int effectiveNightWday(int wday, int nowSec) {
         if (wday < 0 || wday > 6) return wday;
 
-        // Før middag regnes som natten før.
+        // Før middag hører stadig til natten før.
         if (nowSec < toSec(12, 0, 0)) {
             return (wday + 6) % 7;
         }
@@ -154,9 +153,14 @@ private:
 
         switch (state) {
             case OFF:
-                if (dimmer->returnersetvaerdi() != 0) {
-                    dimmer->sluk();
-                }
+                /*
+                  VIGTIGT:
+                  Automatik-OFF skal altid være hårdt OFF.
+
+                  Dette blokerer IKKE manuel "Lys on", fordi loop1 ikke kalder
+                  automatik->update(), når swaktiv/hardware tvang er aktiv.
+                */
+                dimmer->slukNu();
                 break;
 
             case TIMER_A:
@@ -178,7 +182,13 @@ private:
                 break;
 
             case NIGHT_GLOW:
-                if (dimmer->returnersetvaerdi() != param.pwmG) {
+                /*
+                  Hvis natlys er lavt/0, så sluk hårdt.
+                  Det stopper gamle softstart-trin fra at leve videre.
+                */
+                if (param.pwmG <= 25) {
+                    dimmer->slukNu();
+                } else if (dimmer->returnersetvaerdi() != param.pwmG) {
                     dimmer->setlysiprocentSoft(param.pwmG);
                 }
                 break;
@@ -501,6 +511,9 @@ public:
 
         if (!nataktiv) {
             currentState = OFF;
+            timerA = 0;
+            timerC = 0;
+            timerE = 0;
             applyOutputForState(OFF);
             return;
         }
@@ -527,14 +540,32 @@ public:
             updateLuxNat(lux);
         }
 
-        // 2) Return fra forceOff
-        if (slukActiveret && nataktiv) {
+        /*
+          VIGTIG DAG-FIX:
+
+          Hvis det nu er dag, skal automatikken stoppe ALT og slukke hårdt.
+
+          Dette ødelægger IKKE manuel "Lys on", fordi loop1 kun kalder
+          automatik->update(), når tvungeton == false.
+
+          Når swaktiv == true, bliver tvungeton == true i loop1, og så køres
+          automatikken ikke.
+        */
+        if (!nataktiv) {
+            timerA = 0;
+            timerC = 0;
+            timerE = 0;
             slukActiveret = false;
-            applyOutputForState(currentState);
-        } else {
-            slukActiveret = false;
+            currentState = OFF;
+
+            if (dimmer) {
+                dimmer->slukNu();
+            }
+
+            return;
         }
 
+        // 2) Return fra forceOff
         // 3) Hovedlogik
         if (nataktiv) {
             if (pirEvent) {
@@ -555,7 +586,7 @@ public:
                     if (!wantA) {
                         changeState(NIGHT_GLOW);
                     } else {
-                        // Opdater timerA, men start ikke noget nyt output.
+                        // Opdater timerA, men start ikke output igen.
                         setTimerAToEnd(ntpTid, endSec);
 
                         if (timerA <= 0) {
@@ -571,10 +602,6 @@ public:
                 if (currentState == OFF) {
                     startA(ntpTid);
                 }
-            }
-        } else {
-            if (currentState != OFF) {
-                changeState(OFF);
             }
         }
 
@@ -695,14 +722,19 @@ public:
             dimmer->taend();
         }
     }
-
-    void forceOff() {
-        if (dimmer) {
-            dimmer->sluk();
-        }
-
-        slukActiveret = true;
-    }
+ 
+  void forceOff() {
+      if (dimmer) {
+          dimmer->slukNu();
+      }
+  
+      // Ingen "resume gammel state"
+      slukActiveret = false;
+      currentState = OFF;
+      timerA = 0;
+      timerC = 0;
+      timerE = 0;
+  }
 
     bool getNataktiv() const {
         return nataktiv;

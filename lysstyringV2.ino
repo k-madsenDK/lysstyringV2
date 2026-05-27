@@ -10,6 +10,31 @@
  * Kræver tilføjelse i platform.txt ved hver core-opdatering:
  *   compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000
  */
+/*
+ * VIGTIGT:
+ * Dette projekt kan ikke køre stabilt med standard RP2040 stack-layout.
+ * Der SKAL bruges compile flags:
+ *   -DPICO_CORE0_STACK_ADDR=0x2003A000
+ *   -DPICO_CORE1_STACK_ADDR=0x20042000
+ *
+ * Build skal fejle, hvis disse mangler eller har forkert værdi.
+ */
+#ifndef PICO_CORE0_STACK_ADDR
+#error "PICO_CORE0_STACK_ADDR er ikke defineret"
+#endif
+
+#ifndef PICO_CORE1_STACK_ADDR
+#error "PICO_CORE1_STACK_ADDR er ikke defineret"
+#endif
+
+#if PICO_CORE0_STACK_ADDR != 0x2003A000
+#error "PICO_CORE0_STACK_ADDR har forkert vaerdi"
+#endif
+
+#if PICO_CORE1_STACK_ADDR != 0x20042000
+#error "PICO_CORE1_STACK_ADDR har forkert vaerdi"
+#endif
+
 #include <WiFi.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>

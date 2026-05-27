@@ -256,14 +256,19 @@ public:
 
     void setlysiprocentSoft(int nyvaerdi) {
         nyvaerdi = normaliserTarget(nyvaerdi);
-
-        // Hvis vi allerede arbejder mod samme mål, gør intet.
+    
+        // Hvis vi allerede arbejder mod samme mål, gør normalt intet.
+        // MEN: Hvis målet er 0, skal vi sikre hårdt OFF,
+        // så gamle softstart/softsluk-trin ikke kan tænde lyset igen.
         if (nyvaerdi == aktuelsetvaerdi) {
+            if (nyvaerdi == 0) {
+                slukNu();
+            }
             return;
         }
-
+    
         aktuelsetvaerdi = nyvaerdi;
-
+    
         if (nyvaerdi == 0) {
             if (aktuelprocentvaerdi <= OFF_CUTOFF_PROCENT) {
                 slukNu();
@@ -272,7 +277,7 @@ public:
             }
             return;
         }
-
+    
         if (nyvaerdi > aktuelprocentvaerdi) {
             startSoftStart(nyvaerdi);
         } else if (nyvaerdi < aktuelprocentvaerdi) {
