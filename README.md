@@ -252,11 +252,17 @@ Se også `benforbindelser.txt` for den fysiske ledningsføring.
 
 ## Krav / afhængigheder
 
-- **Arduino core:** [Earl Philhower RP2040](https://github.com/earlephilhower/arduino-pico)
-  - Husk at tilføje i `platform.txt` efter opdatering:
-    ```
-    compiler.cpp.extra_flags=-DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000
-    ```
+
+  Arduino core: Earl Philhower RP2040
+        Projektet kræver special stack-layout og kører ikke stabilt med standard RP2040 multicore stack-config.
+        Bemærk at platform.txt kan ændre struktur ved core-opdateringer, så ekstra compile-flags ikke nødvendigvis videreføres automatisk.
+        Build skal derfor have:
+
+        -DPICO_CORE0_STACK_ADDR=0x2003A000 -DPICO_CORE1_STACK_ADDR=0x20042000
+
+        Dette kontrolleres i sketchen med compile-time #error.
+
+
 - **Biblioteker:**
   - SdFat
   - ArduinoJson
